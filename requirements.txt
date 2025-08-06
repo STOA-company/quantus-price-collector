@@ -1,0 +1,8 @@
+redis>=4.5.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=0.19.0
+websockets>=11.0.0
+requests>=2.28.0
+pytz>=2023.3
+exchange_calendars>=4.2.0 

@@ -1,0 +1,45 @@
+services:
+  # Redis 서비스
+  redis:
+    image: redis:7-alpine
+    container_name: pricecollector-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - pricecollector-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # pricecollector 애플리케이션
+  pricecollector:
+    build: .
+    container_name: pricecollector-app
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Docker 환경에서만 변경되는 설정
+      - REDIS_HOST=redis
+    volumes:
+      - ./logs:/app/logs
+      - app_logs:/app
+    networks:
+      - pricecollector-network
+
+volumes:
+  redis_data:
+  app_logs:
+
+networks:
+  pricecollector-network:
+    driver: bridge

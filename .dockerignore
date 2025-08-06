@@ -1,0 +1,52 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.coverage
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment files
+# .env  # 주석 처리하여 .env 파일이 Docker 이미지에 포함되도록 함
+.env.local
+.env.*.local
+
+# Documentation
+*.md
+docs/
+
+# Testing
+test_*.py
+tests/
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Misc
+node_modules/
+npm-debug.log*
