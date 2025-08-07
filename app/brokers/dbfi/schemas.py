@@ -250,22 +250,41 @@ class DBFIMessageParser(BrokerMessageParser):
         header = raw_message.get('header', {})
         body = raw_message.get('body', {})
         
+        # 실제 포스트맨 데이터 형식에 맞게 매핑
+        symbol = body.get('symbol', '')
+        date = body.get('locdate', '')  # locdate 사용
+        time = body.get('loctime', '')  # loctime 사용
+        
+        # 가격 정보 매핑
+        current_price = float(body.get('last', 0))
+        price_change = float(body.get('diff', 0))
+        price_change_rate = float(body.get('rate', 0))
+        open_price = float(body.get('open', 0))
+        high_price = float(body.get('high', 0))
+        low_price = float(body.get('low', 0))
+        volume = int(body.get('exevol', 0))  # 체결량
+        accumulated_volume = int(body.get('volume', 0))  # 누적거래량
+        ask_price = float(body.get('ask', 0))
+        bid_price = float(body.get('bid', 0))
+        ask_quantity = int(body.get('asksize', 0))
+        bid_quantity = int(body.get('bidsize', 0))
+        
         return DBFIRealtimeData(
-            symbol=body.get('symbol', ''),
-            date=body.get('kordate', ''),
-            time=body.get('kortime', ''),
-            current_price=float(body.get('last', 0)),  # 해외주식은 소수점 포함
-            price_change=float(body.get('diff', 0)),
-            price_change_rate=float(body.get('rate', 0)),
-            open_price=float(body.get('open', 0)),
-            high_price=float(body.get('high', 0)),
-            low_price=float(body.get('low', 0)),
-            volume=int(body.get('exevol', 0)),  # 체결량
-            accumulated_volume=int(body.get('volume', 0)),  # 누적거래량
-            ask_price=float(body.get('ask', 0)),
-            bid_price=float(body.get('bid', 0)),
-            ask_quantity=int(body.get('asksize', 0)),
-            bid_quantity=int(body.get('bidsize', 0)),
+            symbol=symbol,
+            date=date,
+            time=time,
+            current_price=current_price,
+            price_change=price_change,
+            price_change_rate=price_change_rate,
+            open_price=open_price,
+            high_price=high_price,
+            low_price=low_price,
+            volume=volume,
+            accumulated_volume=accumulated_volume,
+            ask_price=ask_price,
+            bid_price=bid_price,
+            ask_quantity=ask_quantity,
+            bid_quantity=bid_quantity,
             price_color=body.get('LastClr', ''),
             change_color=body.get('DiffClr', ''),
             rate_color=body.get('RateClr', ''),
