@@ -1,5 +1,7 @@
+version: '3.8'
+
 services:
-  # Redis 서비스
+  # Redis 서비스 (공통)
   redis:
     image: redis:7-alpine
     container_name: pricecollector-redis
@@ -17,10 +19,31 @@ services:
       timeout: 5s
       retries: 5
 
-  # pricecollector 애플리케이션
-  pricecollector:
-    build: .
-    container_name: pricecollector-app
+  # Nginx 로드밸런서
+  nginx:
+    image: nginx:alpine
+    container_name: pricecollector-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./logs/nginx:/var/log/nginx
+    networks:
+      - pricecollector-network
+    depends_on:
+      - pricecollector-blue
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Blue 인스턴스
+  pricecollector-blue:
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER}/quantus-price-collector:${IMAGE_TAG:-latest}
+    container_name: pricecollector-blue
     restart: unless-stopped
     depends_on:
       redis:
@@ -28,17 +51,47 @@ services:
     env_file:
       - .env
     environment:
-      # Docker 환경에서만 변경되는 설정
       - REDIS_HOST=redis
+      - INSTANCE_NAME=blue
+      - PORT=8000
     volumes:
-      - ./logs:/app/logs
-      - app_logs:/app
+      - ./logs/blue:/app/logs
     networks:
       - pricecollector-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Green 인스턴스 (배포시에만 활성화)
+  pricecollector-green:
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER}/quantus-price-collector:${IMAGE_TAG:-latest}
+    container_name: pricecollector-green
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - INSTANCE_NAME=green
+      - PORT=8001
+    volumes:
+      - ./logs/green:/app/logs
+    networks:
+      - pricecollector-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    profiles:
+      - green  # 기본적으로는 실행되지 않음
 
 volumes:
   redis_data:
-  app_logs:
 
 networks:
   pricecollector-network:

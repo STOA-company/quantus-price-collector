@@ -9,7 +9,7 @@ on:
       - 'Dockerfile'
       - 'docker-compose.yml'
       - 'requirements.txt'
-      - 'supervisord.conf'
+
     branches:
       - 'main'
 jobs:
@@ -60,12 +60,12 @@ jobs:
         run: |
           echo "$ENV_CONTENT" > .env
       - name: 빌드 앤 푸시
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ env.OWNER_LC }}/quantus-price-collector:${{ needs.makeTagAndRelease.outputs.tag_name }},
+            ghcr.io/${{ env.OWNER_LC }}/quantus-price-collector:${{ needs.makeTagAndRelease.outputs.tag_name }}
             ghcr.io/${{ env.OWNER_LC }}/quantus-price-collector:latest
   deploy:
     runs-on: ubuntu-latest
@@ -78,8 +78,20 @@ jobs:
           username: ${{ secrets.AZURE_USERNAME }}
           key: ${{ secrets.AZURE_SSH_PRIVATE_KEY }}
           script: |
-            mkdir -p /dockerProjects/quantus-price-collector
-            curl -o /dockerProjects/quantus-price-collector/docker-compose.yml https://raw.githubusercontent.com/${{ github.repository }}/main/docker-compose.yml
+            sudo mkdir -p /dockerProjects/quantus-price-collector
+            
+            # 설정 파일들 다운로드
+            sudo curl -o /dockerProjects/quantus-price-collector/docker-compose.yml https://raw.githubusercontent.com/${{ github.repository }}/main/docker-compose.yml
+            sudo curl -o /dockerProjects/quantus-price-collector/nginx.conf https://raw.githubusercontent.com/${{ github.repository }}/main/nginx.conf
+            sudo curl -o /dockerProjects/quantus-price-collector/deploy.sh https://raw.githubusercontent.com/${{ github.repository }}/main/deploy.sh
+            
+            # 실행 권한 부여
+            sudo chmod +x /dockerProjects/quantus-price-collector/deploy.sh
+            
+            # 환경 변수 설정
+            export IMAGE_TAG=${{ needs.makeTagAndRelease.outputs.tag_name }}
+            export GITHUB_REPOSITORY_OWNER=${{ github.repository_owner }}
+            
+            # 블루-그린 배포 실행
             cd /dockerProjects/quantus-price-collector
-            docker-compose up -d
-            exit 0 
+            sudo ./deploy.sh ${{ needs.makeTagAndRelease.outputs.tag_name }}
