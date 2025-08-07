@@ -88,6 +88,9 @@ jobs:
             # 실행 권한 부여
             sudo chmod +x /dockerProjects/quantus-price-collector/deploy.sh
             
+            # 소문자 변환
+            OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+            
             # 블루-그린 배포 실행
             cd /dockerProjects/quantus-price-collector
-            sudo GITHUB_REPOSITORY_OWNER=${{ github.repository_owner }} IMAGE_TAG=${{ needs.makeTagAndRelease.outputs.tag_name }} ./deploy.sh ${{ needs.makeTagAndRelease.outputs.tag_name }}
+            sudo GITHUB_REPOSITORY_OWNER=${OWNER_LC} IMAGE_TAG=${{ needs.makeTagAndRelease.outputs.tag_name }} ./deploy.sh ${{ needs.makeTagAndRelease.outputs.tag_name }}
