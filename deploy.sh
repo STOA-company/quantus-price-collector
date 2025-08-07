@@ -68,7 +68,7 @@ fi
 echo "♻️ Reloading nginx..."
 docker exec pricecollector-nginx nginx -s reload
 
-# 6. 최종 헬스체크
+# 6. 최종 헬스체크 (nginx를 통한 확인)
 echo "🔍 Final health check..."
 sleep 5
 if curl -f http://localhost/health > /dev/null 2>&1; then

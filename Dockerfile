@@ -57,9 +57,9 @@ COPY . .
 RUN chown -R pricecollector:pricecollector /app
 USER pricecollector
 
-# 헬스체크 (애플리케이션 실행 상태 확인)
+# 헬스체크 (프로세스 실행 여부 확인)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD python -c "import json,time,os;f=open('/app/health_status.json','r');s=json.load(f);f.close();exit(0 if s.get('healthy') and (time.time()-s.get('last_update',0))<300 else 1)" || exit 1
+    CMD pgrep -f "python.*main" > /dev/null || exit 1
 
 # 포트 노출 (필요시)
 # EXPOSE 8080

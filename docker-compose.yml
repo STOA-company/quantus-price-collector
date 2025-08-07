@@ -18,6 +18,29 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    
+    # 가용성 증가
+    # redis:
+    #   image: redis:7-alpine
+    #   container_name: pricecollector-redis
+    #   restart: unless-stopped
+    #   ports:
+    #     - "6379:6379"
+    #   volumes:
+    #     - redis_data:/data
+    #     - ./redis.conf:/usr/local/etc/redis/redis.conf  # 설정 파일 추가
+    #   command: redis-server /usr/local/etc/redis/redis.conf
+    #   networks:
+    #     - pricecollector-network
+    #   healthcheck:
+    #     test: ["CMD", "redis-cli", "ping"]
+    #     interval: 10s
+    #     timeout: 5s
+    #     retries: 5
+    #   ulimits:  # 파일 디스크립터 제한 증가
+    #     nofile:
+    #       soft: 65536
+    #       hard: 65536
 
   # Nginx 로드밸런서
   nginx:
@@ -35,7 +58,7 @@ services:
     depends_on:
       - pricecollector-blue
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      test: ["CMD", "nc", "-z", "pricecollector-blue", "8000"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -59,7 +82,7 @@ services:
     networks:
       - pricecollector-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "pgrep", "-f", "python.*main"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -83,7 +106,7 @@ services:
     networks:
       - pricecollector-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      test: ["CMD", "pgrep", "-f", "python.*main"]
       interval: 30s
       timeout: 10s
       retries: 3

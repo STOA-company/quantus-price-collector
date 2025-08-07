@@ -84,6 +84,7 @@ jobs:
             sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/docker-compose.yml https://raw.githubusercontent.com/${{ github.repository }}/main/docker-compose.yml
             sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/deploy.sh https://raw.githubusercontent.com/${{ github.repository }}/main/deploy.sh
             sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/nginx.conf https://raw.githubusercontent.com/${{ github.repository }}/main/nginx.conf
+            sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/redis.conf https://raw.githubusercontent.com/${{ github.repository }}/main/redis.conf
 
             # 실행 권한 부여
             sudo chmod +x /dockerProjects/quantus-price-collector/deploy.sh
