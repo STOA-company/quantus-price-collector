@@ -9,6 +9,9 @@ on:
       - 'Dockerfile'
       - 'docker-compose.yml'
       - 'requirements.txt'
+      - 'deploy.sh'
+      - 'nginx.conf'
+      - 'redis.conf'
       - 'README.md'
 
     branches:

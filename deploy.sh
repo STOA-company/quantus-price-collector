@@ -60,17 +60,17 @@ fi
 echo "🔄 Switching nginx to $NEW..."
 if [ "$NEW" == "green" ]; then
     # Blue -> Green
-    sed -i 's/server pricecollector-blue:8000/server pricecollector-green:8001/' $NGINX_CONF
-    sed -i 's/# server pricecollector-green:8001/server pricecollector-blue:8000 backup;/' $NGINX_CONF
+    sed -i 's/server pricecollector-blue:8000 max_fails=3 fail_timeout=30s;/server pricecollector-green:8001 max_fails=3 fail_timeout=30s;/' $NGINX_CONF
+    sed -i 's/# server pricecollector-green:8001 max_fails=3 fail_timeout=30s backup;/# server pricecollector-blue:8000 max_fails=3 fail_timeout=30s backup;/' $NGINX_CONF
 else
     # Green -> Blue  
-    sed -i 's/server pricecollector-green:8001/server pricecollector-blue:8000/' $NGINX_CONF
-    sed -i 's/server pricecollector-blue:8000 backup;/# server pricecollector-green:8001/' $NGINX_CONF
+    sed -i 's/server pricecollector-green:8001 max_fails=3 fail_timeout=30s;/server pricecollector-blue:8000 max_fails=3 fail_timeout=30s;/' $NGINX_CONF
+    sed -i 's/# server pricecollector-blue:8000 max_fails=3 fail_timeout=30s backup;/# server pricecollector-green:8001 max_fails=3 fail_timeout=30s backup;/' $NGINX_CONF
 fi
 
-# 5. Nginx 리로드
-echo "♻️ Reloading nginx..."
-docker exec pricecollector-nginx nginx -s reload
+# 5. Nginx 재시작 (설정 변경 적용)
+echo "♻️ Restarting nginx to apply new configuration..."
+docker compose restart nginx
 
 # 6. 최종 헬스체크 (nginx를 통한 확인)
 echo "🔍 Final health check..."
