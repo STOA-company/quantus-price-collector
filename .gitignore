@@ -207,3 +207,6 @@ marimo/_lsp/
 __marimo__/
 
 .env
+.env.local
+.env.dev
+.env.prod

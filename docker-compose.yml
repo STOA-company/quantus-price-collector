@@ -48,8 +48,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    env_file:
-      - .env
+    # env_file:
+    #   - .env
     environment:
       - REDIS_HOST=redis
       - INSTANCE_NAME=blue
@@ -72,8 +72,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    env_file:
-      - .env
+    # env_file:
+    #   - .env
     environment:
       - REDIS_HOST=redis
       - INSTANCE_NAME=green
