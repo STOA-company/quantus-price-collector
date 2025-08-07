@@ -138,7 +138,7 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
             data = json.loads(message)
             
             # 전체 메시지 로깅 (개발/디버깅용)
-            logger.debug(f"DBFI 원본 메시지: {message}")
+            # logger.debug(f"DBFI 원본 메시지: {message}")
             # logger.debug(f"DBFI 파싱된 데이터: {json.dumps(data, ensure_ascii=False, indent=2)}")
             
             return data
