@@ -9,6 +9,7 @@ on:
       - 'Dockerfile'
       - 'docker-compose.yml'
       - 'requirements.txt'
+      - 'README.md'
 
     branches:
       - 'main'
