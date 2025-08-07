@@ -10,7 +10,7 @@ from app.brokers.base import BrokerMessage, BrokerMessageBuilder, BrokerMessageP
 class DBFIMarketType(Enum):
     """DBFI 시장 타입 열거형"""
     DOMESTIC = "S00"
-    FOREIGN = "V10"
+    FOREIGN = "V60"
 
 
 @dataclass

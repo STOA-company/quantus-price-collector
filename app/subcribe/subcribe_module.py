@@ -1,18 +1,13 @@
 import asyncio
 import json
 import logging
-import os
 import redis
 from datetime import datetime
 from typing import Dict, List, Optional
-from dotenv import load_dotenv
-
-# 환경 변수 로드
-load_dotenv()
 
 # 로깅 설정
 logging.basicConfig(
-    level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO')),
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -29,27 +24,22 @@ class PriceSubscriber:
         self.latest_prices: Dict[str, Dict] = {}
         self.running = False
         
-        # 환경 변수에서 설정 로드
+        # 하드코딩된 설정
         self._load_config()
         
     def _load_config(self):
-        """환경 변수에서 설정 로드"""
+        """하드코딩된 설정 로드"""
         try:
             # Redis 설정
-            self.redis_host = os.getenv('REDIS_HOST', 'localhost')
-            self.redis_port = int(os.getenv('REDIS_PORT', '6379'))
-            self.redis_db = int(os.getenv('REDIS_DB', '0'))
-            self.redis_password = os.getenv('REDIS_PASSWORD', '')
+            self.redis_host = '20.196.65.98'
+            self.redis_port = 6379
+            self.redis_db = 0
+            self.redis_password = ''
             
             # 브로커 및 종목 설정
-            brokers_str = os.getenv('ENABLED_BROKERS', '["dbfi"]')
-            symbols_str = os.getenv('WATCH_SYMBOLS_DOMESTIC', '["069500", "114800", "122630"]')
-
-            
-
-            # JSON 파싱
-            self.brokers = json.loads(brokers_str) if brokers_str else ["dbfi"]
-            self.symbols = json.loads(symbols_str) if symbols_str else []
+            self.brokers = ["dbfi"]
+            self.symbols = ["FADIA", "FASSO", "FASPXL", "FAQLD", "FNTQQQ", "FNSOXX", "FAGLD", "FAGLDM", "FNTLT", "FAUVIX", "FAUSO"]
+            WATCH_SYMBOLS_FOREIGN=["FADIA", "FASSO", "FASPXL", "FAQLD", "FNTQQQ", "FNSOXX", "FAGLD", "FAGLDM", "FNTLT", "FAUVIX", "FAUSO"]
             
             logger.info(f"설정 로드 완료 - 브로커: {self.brokers}, 종목: {self.symbols}")
             
