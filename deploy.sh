@@ -13,6 +13,10 @@ echo "🚀 Starting Blue-Green deployment with image tag: $IMAGE_TAG"
 # 프로젝트 디렉토리로 이동
 cd $PROJECT_DIR
 
+# 기본 서비스들 먼저 시작 (redis, nginx)
+echo "🔧 Starting base services (redis, nginx)..."
+docker compose up -d redis nginx
+
 # 현재 활성 컨테이너 확인
 CURRENT_ACTIVE=$(docker ps --filter "name=pricecollector-" --filter "status=running" --format "{{.Names}}" | grep -E "(blue|green)" | head -1)
 
