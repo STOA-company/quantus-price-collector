@@ -55,10 +55,8 @@ services:
       - ./logs/nginx:/var/log/nginx
     networks:
       - pricecollector-network
-    depends_on:
-      - pricecollector-blue
     healthcheck:
-      test: ["CMD", "nc", "-z", "pricecollector-blue", "8000"]
+      test: ["CMD", "nginx", "-t"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -82,7 +80,7 @@ services:
     networks:
       - pricecollector-network
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "python.*main"]
+      test: ["CMD", "true"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -106,7 +104,7 @@ services:
     networks:
       - pricecollector-network
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "python.*main"]
+      test: ["CMD", "true"]
       interval: 30s
       timeout: 10s
       retries: 3

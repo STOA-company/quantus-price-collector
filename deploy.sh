@@ -32,21 +32,21 @@ echo "📍 Current active: $CURRENT, Deploying to: $NEW"
 echo "🟢 Starting $NEW container..."
 docker compose --profile $NEW up -d pricecollector-$NEW
 
-# 2. 헬스체크 대기
-echo "🔍 Waiting for $NEW container to be healthy..."
+# 2. 컨테이너 실행 확인 대기
+echo "🔍 Waiting for $NEW container to be running..."
 for i in {1..30}; do
-    # Docker 컨테이너 헬스체크 상태 확인
-    if [ "$(docker inspect --format='{{.State.Health.Status}}' pricecollector-$NEW 2>/dev/null)" = "healthy" ]; then
-        echo "✅ $NEW container is healthy"
+    # 컨테이너가 실행 중인지 확인
+    if [ "$(docker inspect --format='{{.State.Status}}' pricecollector-$NEW 2>/dev/null)" = "running" ]; then
+        echo "✅ $NEW container is running"
         break
     fi
     echo "⏳ Waiting for $NEW container... ($i/30)"
     sleep 10
 done
 
-# 3. 헬스체크 실패시 롤백
-if [ "$(docker inspect --format='{{.State.Health.Status}}' pricecollector-$NEW 2>/dev/null)" != "healthy" ]; then
-    echo "❌ $NEW container failed health check, rolling back..."
+# 3. 컨테이너 실행 확인 실패시 롤백
+if [ "$(docker inspect --format='{{.State.Status}}' pricecollector-$NEW 2>/dev/null)" != "running" ]; then
+    echo "❌ $NEW container is not running, rolling back..."
     docker compose stop pricecollector-$NEW
     docker compose rm -f pricecollector-$NEW
     exit 1

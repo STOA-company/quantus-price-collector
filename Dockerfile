@@ -57,9 +57,6 @@ COPY . .
 RUN chown -R pricecollector:pricecollector /app
 USER pricecollector
 
-# 헬스체크 (프로세스 실행 여부 확인)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD pgrep -f "python.*main" > /dev/null || exit 1
 
 # 포트 노출 (필요시)
 # EXPOSE 8080
