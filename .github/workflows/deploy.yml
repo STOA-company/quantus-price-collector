@@ -85,14 +85,9 @@ jobs:
             sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/deploy.sh https://raw.githubusercontent.com/${{ github.repository }}/main/deploy.sh
             sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/nginx.conf https://raw.githubusercontent.com/${{ github.repository }}/main/nginx.conf
 
-            
             # 실행 권한 부여
             sudo chmod +x /dockerProjects/quantus-price-collector/deploy.sh
             
-            # 환경 변수 설정
-            export IMAGE_TAG=${{ needs.makeTagAndRelease.outputs.tag_name }}
-            export GITHUB_REPOSITORY_OWNER=${{ github.repository_owner }}
-            
             # 블루-그린 배포 실행
             cd /dockerProjects/quantus-price-collector
-            sudo ./deploy.sh ${{ needs.makeTagAndRelease.outputs.tag_name }}
+            sudo GITHUB_REPOSITORY_OWNER=${{ github.repository_owner }} IMAGE_TAG=${{ needs.makeTagAndRelease.outputs.tag_name }} ./deploy.sh ${{ needs.makeTagAndRelease.outputs.tag_name }}

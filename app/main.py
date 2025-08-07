@@ -119,8 +119,13 @@ class ScheduledBrokerController:
                 logger.warning("브로커 데몬이 이미 실행 중입니다")
                 return
             
-            # 브로커 데몬을 별도 태스크로 실행
-            self.daemon_task = asyncio.create_task(self.broker_daemon.start())
+            # 현재 활성 시장 정보 가져오기
+            active_markets_info = self.market_scheduler.get_active_markets_info()
+            
+            # 브로커 데몬을 별도 태스크로 실행 (시장 정보 전달)
+            self.daemon_task = asyncio.create_task(
+                self.broker_daemon.start(active_markets_info=active_markets_info)
+            )
             logger.info("✅ 브로커 데몬 시작됨")
             
         except Exception as e:

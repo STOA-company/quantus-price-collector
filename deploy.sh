@@ -35,7 +35,8 @@ docker compose --profile $NEW up -d pricecollector-$NEW
 # 2. 헬스체크 대기
 echo "🔍 Waiting for $NEW container to be healthy..."
 for i in {1..30}; do
-    if curl -f http://localhost/green > /dev/null 2>&1 || curl -f http://localhost:$NEW_PORT/health > /dev/null 2>&1; then
+    # Docker 컨테이너 헬스체크 상태 확인
+    if [ "$(docker inspect --format='{{.State.Health.Status}}' pricecollector-$NEW 2>/dev/null)" = "healthy" ]; then
         echo "✅ $NEW container is healthy"
         break
     fi

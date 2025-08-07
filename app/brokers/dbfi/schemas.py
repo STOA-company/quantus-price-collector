@@ -10,7 +10,7 @@ from app.brokers.base import BrokerMessage, BrokerMessageBuilder, BrokerMessageP
 class DBFIMarketType(Enum):
     """DBFI 시장 타입 열거형"""
     DOMESTIC = "S00"
-    FOREIGN = "V60"
+    FOREIGN = "V10"
 
 
 @dataclass
@@ -163,26 +163,25 @@ class DBFIMessageParser(BrokerMessageParser):
             # 메시지 타입 확인
             tr_cd = header.get('tr_cd', '')
             tr_type = header.get('tr_type', '')
-            #==================================해외주식 데이터 파싱 필요 =====================================================
+
             # 구독 응답 메시지 파싱
-            if tr_cd == 'S00' and tr_type == '1':
+            if tr_cd == DBFIMarketType.DOMESTIC.value and tr_type == '1':
                 parsed_data = self._parse_subscribe_response(raw_message)
                 parsed_message = parsed_data.to_dict()
             
             # 실시간 데이터 메시지 파싱
-            elif tr_cd == 'S00' and 'ShrnIscd' in body:
+            elif tr_cd == DBFIMarketType.DOMESTIC.value and 'ShrnIscd' in body:
                 parsed_data = self._parse_realtime_data(raw_message)
                 parsed_message = parsed_data.to_dict()
             
-            # elif tr_cd == 'V60' and tr_type == '1':
-            #     parsed_data = self._parse_subscribe_response(raw_message)
-            #     parsed_message = parsed_data.to_dict()
+            elif tr_cd == DBFIMarketType.FOREIGN.value and tr_type == '1':
+                parsed_data = self._parse_subscribe_response(raw_message)
+                parsed_message = parsed_data.to_dict()
             
-            # # 실시간 데이터 메시지 파싱
-            # elif tr_cd == 'V60' and 'ShrnIscd' in body:
-            #     parsed_data = self._parse_realtime_data(raw_message)
-            #     parsed_message = parsed_data.to_dict()
-            #==================================해외주식 데이터 파싱 필요 =====================================================
+            # 실시간 데이터 메시지 파싱
+            elif tr_cd == DBFIMarketType.FOREIGN.value and 'symbol' in body:
+                parsed_data = self._parse_foreign_realtime_data(raw_message)
+                parsed_message = parsed_data.to_dict()
             
             # 알 수 없는 메시지 타입
             else:
@@ -242,6 +241,34 @@ class DBFIMessageParser(BrokerMessageParser):
             price_color=body.get('StckPrprclr', ''),
             change_color=body.get('PrdyVrssclr', ''),
             rate_color=body.get('PrdyCtrtclr', ''),
+            raw_data=raw_message,
+            timestamp=datetime.now().isoformat()
+        )
+    
+    def _parse_foreign_realtime_data(self, raw_message: Dict[str, Any]) -> DBFIRealtimeData:
+        """실시간 데이터 메시지 파싱 (해외주식용)"""
+        header = raw_message.get('header', {})
+        body = raw_message.get('body', {})
+        
+        return DBFIRealtimeData(
+            symbol=body.get('symbol', ''),
+            date=body.get('kordate', ''),
+            time=body.get('kortime', ''),
+            current_price=float(body.get('last', 0)),  # 해외주식은 소수점 포함
+            price_change=float(body.get('diff', 0)),
+            price_change_rate=float(body.get('rate', 0)),
+            open_price=float(body.get('open', 0)),
+            high_price=float(body.get('high', 0)),
+            low_price=float(body.get('low', 0)),
+            volume=int(body.get('exevol', 0)),  # 체결량
+            accumulated_volume=int(body.get('volume', 0)),  # 누적거래량
+            ask_price=float(body.get('ask', 0)),
+            bid_price=float(body.get('bid', 0)),
+            ask_quantity=int(body.get('asksize', 0)),
+            bid_quantity=int(body.get('bidsize', 0)),
+            price_color=body.get('LastClr', ''),
+            change_color=body.get('DiffClr', ''),
+            rate_color=body.get('RateClr', ''),
             raw_data=raw_message,
             timestamp=datetime.now().isoformat()
         )

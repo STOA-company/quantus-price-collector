@@ -111,10 +111,20 @@ class MarketScheduler:
         """현재 활성화된 시장들의 상세 정보 반환"""
         active_markets = {}
         for market in self.config.markets:
-            if market == "KR":
-                market_info = is_market_open(market, self.config.market_hours)
+            if self.config.mode == SchedulerMode.ALWAYS_ON:
+                # ALWAYS_ON 모드에서는 모든 시장을 활성화
+                market_info = {
+                    'is_trading_hours': True,
+                    'is_pre_market': False,
+                    'is_after_market': False,
+                    'is_closed': False
+                }
             else:
-                market_info = is_market_open(market)
+                # 실제 시장 시간 체크
+                if market == "KR":
+                    market_info = is_market_open(market, self.config.market_hours)
+                else:
+                    market_info = is_market_open(market)
             
             market_type = self.get_broker_params_for_market(market)
             
@@ -122,8 +132,8 @@ class MarketScheduler:
                 'market_info': market_info,
                 'market_type': market_type,
                 'is_active': market_info.get('is_trading_hours', False) or 
-                           market_info.get('is_pre_market', False) or 
-                           market_info.get('is_after_market', False)
+                        market_info.get('is_pre_market', False) or 
+                        market_info.get('is_after_market', False)
             }
             
         return active_markets

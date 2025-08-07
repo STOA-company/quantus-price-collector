@@ -210,3 +210,4 @@ __marimo__/
 .env.local
 .env.dev
 .env.prod
+env.exam
