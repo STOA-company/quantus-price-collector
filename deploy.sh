@@ -45,7 +45,7 @@ for i in {1..30}; do
 done
 
 # 3. 헬스체크 실패시 롤백
-if ! curl -f http://localhost:$NEW_PORT/health > /dev/null 2>&1; then
+if [ "$(docker inspect --format='{{.State.Health.Status}}' pricecollector-$NEW 2>/dev/null)" != "healthy" ]; then
     echo "❌ $NEW container failed health check, rolling back..."
     docker compose stop pricecollector-$NEW
     docker compose rm -f pricecollector-$NEW

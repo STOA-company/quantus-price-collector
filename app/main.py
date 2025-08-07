@@ -4,6 +4,8 @@ import signal
 import time
 import asyncio
 import os
+import json
+from datetime import datetime
 from typing import Dict, Any
 
 from .utils.config import config
@@ -205,6 +207,7 @@ class PriceCollector:
         self.websocket_client = DBFIWebSocketClient()
         self.broker_daemon = BrokerDaemon()
         self.scheduled_controller = ScheduledBrokerController()
+        self.health_file = "/app/health_status.json"
         
     def start(self):
         """애플리케이션 시작"""
@@ -217,6 +220,9 @@ class PriceCollector:
         
         self.running = True
         logger.info("애플리케이션이 성공적으로 시작되었습니다.")
+        
+        # 초기 헬스체크 상태 생성
+        self.update_health_status()
         
         # 시그널 핸들러 설정
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -288,9 +294,22 @@ class PriceCollector:
             # 브로커 데몬 정지
             await self.broker_daemon.stop()
     
+    async def _health_check_loop(self):
+        """주기적 헬스체크 업데이트 루프"""
+        while self.running:
+            try:
+                self.update_health_status()
+                await asyncio.sleep(30)  # 30초마다 업데이트
+            except Exception as e:
+                logger.error(f"헬스체크 업데이트 오류: {e}")
+                await asyncio.sleep(30)
+    
     async def run_scheduled_broker_daemon(self):
         """스케줄드 브로커 데몬 실행 (시장 시간 기반)"""
         logger.info("=== 스케줄드 브로커 데몬 시작 ===")
+        
+        # 헬스체크 태스크 시작
+        health_task = asyncio.create_task(self._health_check_loop())
         
         try:
             # 스케줄드 컨트롤러 시작
@@ -301,6 +320,14 @@ class PriceCollector:
         except Exception as e:
             logger.error(f"스케줄드 브로커 데몬 실행 중 오류 발생: {e}")
         finally:
+            # 헬스체크 태스크 정리
+            if not health_task.done():
+                health_task.cancel()
+                try:
+                    await health_task
+                except asyncio.CancelledError:
+                    pass
+            
             # 스케줄드 컨트롤러 정지
             await self.scheduled_controller.stop()
     
@@ -370,6 +397,22 @@ class PriceCollector:
         else:
             logger.error("Redis 연결 상태: 비정상")
             return False
+    
+    def update_health_status(self):
+        """헬스 상태를 파일에 주기적으로 업데이트"""
+        try:
+            status = {
+                "healthy": self.run_health_check(),
+                "last_update": datetime.now().timestamp(),
+                "redis_connected": self.redis_service.is_connected() if self.redis_service else False,
+                "running": self.running
+            }
+            
+            with open(self.health_file, 'w') as f:
+                json.dump(status, f)
+                
+        except Exception as e:
+            logger.error(f"헬스 상태 업데이트 실패: {e}")
     
     def run_loop(self):
         """메인 실행 루프"""
