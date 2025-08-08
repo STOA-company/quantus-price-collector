@@ -11,6 +11,8 @@ from .services.redis_service import redis_service
 from .brokers.dbfi.websocket import DBFIWebSocketClient
 from .daemon.broker_daemon import BrokerDaemon
 from .schedule import MarketScheduler, MarketState
+from .schedule.domestic_scheduler import DomesticScheduler
+from .schedule.foreign_scheduler import ForeignScheduler
 
 
 # 환경변수 기반 로깅 설정
@@ -70,29 +72,18 @@ class ScheduledBrokerController:
     
     def _setup_scheduler_callbacks(self):
         """시장 상태별 콜백 설정"""
-        self.market_scheduler.register_state_callback(MarketState.PRE_MARKET, self._on_pre_market)
         self.market_scheduler.register_state_callback(MarketState.REGULAR_HOURS, self._on_market_open)
-        self.market_scheduler.register_state_callback(MarketState.AFTER_HOURS, self._on_after_hours)
         self.market_scheduler.register_state_callback(MarketState.CLOSED, self._on_market_closed)
         
         # 일반 상태 변경 로깅
         self.market_scheduler.register_general_callback(self._on_market_state_change)
     
-    async def _on_pre_market(self, old_state: MarketState, new_state: MarketState):
-        """장 시작 전 - 브로커 데몬 준비"""
-        logger.info("🟡 장 시작 전 - 브로커 데몬 준비 중...")
+    async def _on_market_open(self, old_state: MarketState, new_state: MarketState):
+        """거래시간 시작 - 브로커 데몬 시작"""
+        logger.info("🟢 거래시간 시작 - 브로커 데몬 시작")
         if not self.broker_daemon:
             await self._prepare_broker_daemon()
-    
-    async def _on_market_open(self, old_state: MarketState, new_state: MarketState):
-        """정규시간 시작 - 브로커 데몬 시작"""
-        logger.info("🟢 정규시간 시작 - 브로커 데몬 시작")
         await self._start_broker_daemon()
-    
-    async def _on_after_hours(self, old_state: MarketState, new_state: MarketState):
-        """장 마감 후 - 브로커 데몬 유지 (데이터 정리)"""
-        logger.info("🟠 장 마감 후 - 브로커 데몬 유지 중...")
-        # 데몬은 계속 실행하되 로그만 남김
     
     async def _on_market_closed(self, old_state: MarketState, new_state: MarketState):
         """휴장 - 브로커 데몬 정지"""
@@ -203,8 +194,9 @@ class PriceCollector:
         self.running = False
         self.redis_service = redis_service
         self.websocket_client = DBFIWebSocketClient()
-        self.broker_daemon = BrokerDaemon()
         self.scheduled_controller = ScheduledBrokerController()
+        self.domestic_scheduler = DomesticScheduler()
+        self.foreign_scheduler = ForeignScheduler()
         
     def start(self):
         """애플리케이션 시작"""
@@ -392,7 +384,36 @@ class PriceCollector:
         finally:
             self.stop()
 
-
+    async def run_multi_market_daemon(self):
+        """🔥 NEW: 국내/해외 분리 브로커 데몬 실행"""
+        logger.info("=== 국내/해외 분리 브로커 데몬 시작 ===")
+        
+        try:
+            # 국내/해외 스케줄러 병렬 실행
+            await asyncio.gather(
+                self.domestic_scheduler.start(),
+                self.foreign_scheduler.start()
+            )
+            
+        except KeyboardInterrupt:
+            logger.info("키보드 인터럽트로 분리 브로커 데몬 종료")
+        except Exception as e:
+            logger.error(f"분리 브로커 데몬 실행 중 오류 발생: {e}")
+        finally:
+            # 스케줄러들 정지
+            await self._stop_all_schedulers()
+        
+    async def _stop_all_schedulers(self):
+        """모든 스케줄러 정지"""
+        try:
+            await asyncio.gather(
+                self.domestic_scheduler.stop(),
+                self.foreign_scheduler.stop(),
+                return_exceptions=True
+            )
+            logger.info("✅ 모든 스케줄러 정지 완료")
+        except Exception as e:
+            logger.error(f"스케줄러 정지 중 오류: {e}")
 def main():
     """메인 함수""" 
     app = PriceCollector()
@@ -402,7 +423,7 @@ def main():
         # asyncio.run(app.test_websocket_connection())
         
         # 🔥 스케줄드 브로커 데몬 실행 (시장 시간 기반) - 새로운 방식
-        asyncio.run(app.run_scheduled_broker_daemon())
+        asyncio.run(app.run_multi_market_daemon())
         
         # 기존 브로커 데몬 실행 (항상 실행) - 기존 방식
         # asyncio.run(app.run_broker_daemon())

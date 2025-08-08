@@ -20,12 +20,14 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
     def __init__(self, broker_config: BrokerConfig = None, market_type: MarketType = MarketType.DOMESTIC):
         # broker_config이 None이면 DBFI 전용 설정 사용
         if broker_config is None:
+            # 시장별 설정 가져오기
+            dbfi_config = config.dbfi.get_config_for_market(market_type)  # 👈 여기가 핵심
             broker_config = BrokerConfig(
-                api_key=config.dbfi.api_key,
-                api_secret=config.dbfi.api_secret,
-                websocket_url=config.dbfi.websocket_url,
-                batch_size=config.dbfi.batch_size,
-                available_sessions=config.dbfi.available_sessions,
+                api_key=dbfi_config['api_key'],
+                api_secret=dbfi_config['api_secret'],
+                websocket_url=dbfi_config['websocket_url'],
+                batch_size=dbfi_config['batch_size'],
+                available_sessions=dbfi_config['available_sessions'],
                 market_type=market_type
             )
         
@@ -33,13 +35,18 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
         
         # MarketType 저장
         self.market_type = broker_config.market_type
-        
+
+        logger.info(f"🔑 DBFIWebSocketClient 초기화 ({self.market_type.value}):")
+        logger.info(f"   API Key: {broker_config.api_key[:10]}..." if broker_config.api_key else "   API Key: 설정되지 않음")
+        logger.info(f"   API Secret: {'설정됨' if broker_config.api_secret else '설정되지 않음'}")
+        logger.info(f"   WebSocket URL: {broker_config.websocket_url}")
+            
         # DBFI 설정 (config에서 직접 가져옴)
-        self.api_key = config.dbfi.api_key
-        self.api_secret = config.dbfi.api_secret
-        self.websocket_url = config.dbfi.websocket_url
-        self.batch_size = config.dbfi.batch_size
-        self.available_sessions = config.dbfi.available_sessions
+        self.api_key = broker_config.api_key  # ← broker_config에서 가져오도록 수정
+        self.api_secret = broker_config.api_secret  # ← broker_config에서 가져오도록 수정
+        self.websocket_url = broker_config.websocket_url  # ← broker_config에서 가져오도록 수정
+        self.batch_size = broker_config.batch_size
+        self.available_sessions = broker_config.available_sessions
         self.heartbeat_timeout = config.dbfi.heartbeat_timeout
         self.reconnect_delay = config.dbfi.reconnect_delay
 
@@ -58,6 +65,11 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
             # 웹소켓 URL 구성
             ws_url = self._build_websocket_url()
 
+            # 연결 전 현재 설정 출력
+            logger.info(f"🔑 웹소켓 연결 시도 ({self.market_type.value}):")
+            logger.info(f"   API Key: {self.api_key[:10]}...")
+            logger.info(f"   Access Token: {self.access_token[:30]}...")
+            
             # 웹소켓 연결
             self.websocket = await websockets.connect(
                 ws_url,

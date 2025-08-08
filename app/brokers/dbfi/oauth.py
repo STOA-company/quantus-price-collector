@@ -31,17 +31,16 @@ class TokenRequestError(Exception):
 class DBFIOAuth(BrokerOAuth):
     """DBFI OAuth 클래스"""
     
-    _instance = None
+    _instances = {}  # 토큰 인스턴스 저장 (앱키별)
     _lock = threading.Lock()
-
     BASE_URL = "https://openapi.dbsec.co.kr:8443"
-
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super(DBFIOAuth, cls).__new__(cls)
-        return cls._instance
+    
+    def __new__(cls, appkey: str, *args, **kwargs):
+        # 앱키별로 인스턴스 생성/재사용 (세션 간에는 공유)
+        with cls._lock:
+            if appkey not in cls._instances:
+                cls._instances[appkey] = super(DBFIOAuth, cls).__new__(cls)
+            return cls._instances[appkey]
 
     def __init__(self, appkey: str, appsecretkey: str, headers: dict = {}):
         if hasattr(self, "appkey") and appkey == self.appkey \

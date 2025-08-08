@@ -1,8 +1,22 @@
 import pytz
 import logging
+import os
+import exchange_calendars as ecals
+from dotenv import load_dotenv
 from datetime import datetime, date, timedelta
 from typing import Literal
-import exchange_calendars as ecals
+
+load_dotenv()
+# 시장 운영시간 환경변수 설정
+KR_MARKET_START = os.getenv('KR_MARKET_START', '08:00')  # 한국 시장 시작 시간
+KR_MARKET_END = os.getenv('KR_MARKET_END', '18:00')  # 한국 시장 종료 시간
+
+# 환경변수 로딩 확인을 위한 로깅
+print(f"🕒 [설정] 한국 시장 시간 설정 확인:")
+print(f"   시작 시간: {KR_MARKET_START} (환경변수: {os.environ.get('KR_MARKET_START', '설정되지 않음')})")
+print(f"   종료 시간: {KR_MARKET_END} (환경변수: {os.environ.get('KR_MARKET_END', '설정되지 않음')})")
+US_MARKET_START = os.getenv('US_MARKET_START', '04:00')  # 미국 시장 시작 시간
+US_MARKET_END = os.getenv('US_MARKET_END', '20:00')  # 미국 시장 종료 시간
 
 # 타임존 설정 (quantus_backend 의존성 제거)
 korea_tz = pytz.timezone('Asia/Seoul')
@@ -198,44 +212,38 @@ def is_market_open(country: Literal["KR", "US"] = "KR", market_hours=None) -> di
     is_business_day = check_session(dt=now, country=country)
     
     if country == "KR":
-        # 시장 시간 설정 (기본값 또는 전달받은 설정 사용)
-        if market_hours:
-            pre_start_time = market_hours.pre_market_start.split(':')
-            open_time = market_hours.market_open.split(':')
-            close_time = market_hours.market_close.split(':')
-            after_end_time = market_hours.after_market_end.split(':')
-            
-            pre_start_hour, pre_start_min = int(pre_start_time[0]), int(pre_start_time[1])
-            open_hour, open_min = int(open_time[0]), int(open_time[1])
-            close_hour, close_min = int(close_time[0]), int(close_time[1])
-            after_end_hour, after_end_min = int(after_end_time[0]), int(after_end_time[1])
-        else:
-            # 시장 시간 설정이 없으면 오류 발생
-            raise ValueError("시장 시간 설정이 필요합니다. market_hours 매개변수를 전달해주세요.")
+        # 환경변수에서 시장 시간 가져오기
+        start_time = KR_MARKET_START.split(':')
+        end_time = KR_MARKET_END.split(':')
+        market_open_hour = int(start_time[0])
+        market_open_minute = int(start_time[1])
+        market_close_hour = int(end_time[0])
+        market_close_minute = int(end_time[1])
         
         # 현재 시간을 분 단위로 변환
         current_minutes = now.hour * 60 + now.minute
-        pre_start_minutes = pre_start_hour * 60 + pre_start_min
-        open_minutes = open_hour * 60 + open_min
-        close_minutes = close_hour * 60 + close_min
-        after_end_minutes = after_end_hour * 60 + after_end_min
+        open_minutes = market_open_hour * 60 + market_open_minute
+        close_minutes = market_close_hour * 60 + market_close_minute
         
         is_trading_hours = open_minutes <= current_minutes < close_minutes
-        is_pre_market = pre_start_minutes <= current_minutes < open_minutes
-        is_after_market = close_minutes <= current_minutes < after_end_minutes
+        is_pre_market = False  # 한국 시장도 pre/after market 구분 없이 운영
+        is_after_market = False
     elif country == "US":
-        # 미국 시장: 09:30 - 16:00 EST (썸머타임 고려)
-        market_open_hour = 9
-        market_open_minute = 30
-        market_close_hour = 16
+        # 환경변수에서 시장 시간 가져오기
+        start_time = US_MARKET_START.split(':')
+        end_time = US_MARKET_END.split(':')
+        market_open_hour = int(start_time[0])
+        market_open_minute = int(start_time[1])
+        market_close_hour = int(end_time[0])
+        market_close_minute = int(end_time[1])
         
         current_time_minutes = now.hour * 60 + now.minute
         open_time_minutes = market_open_hour * 60 + market_open_minute
-        close_time_minutes = market_close_hour * 60
+        close_time_minutes = market_close_hour * 60 + market_close_minute
         
         is_trading_hours = open_time_minutes <= current_time_minutes < close_time_minutes
-        is_pre_market = (8 * 60) <= current_time_minutes < open_time_minutes  # 08:00-09:30
-        is_after_market = close_time_minutes <= current_time_minutes < (20 * 60)  # 16:00-20:00
+        is_pre_market = False  # 미국 시장은 pre/after market 구분 없이 운영
+        is_after_market = False
     else:
         is_trading_hours = False
         is_pre_market = False

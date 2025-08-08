@@ -8,11 +8,7 @@ from app.services.redis_service import RedisService
 from app.brokers.factory import broker_factory_manager
 from app.brokers.base import BrokerWebSocketClient, MarketType
 from app.utils.config import config
-
-# 브로커 자동 등록을 위한 import
-import app.brokers.dbfi
-from app.brokers.dbfi.session_manager import DBFISessionManager  # 추가
-
+from ..brokers.base import BrokerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +17,26 @@ class BrokerConnectionError(Exception):
     pass
 
 class BrokerDaemon:
-    def __init__(self):
+    def __init__(self, market_type: MarketType):
+        self.market_type = market_type
         self.config = config
         self.redis_service = RedisService()
         self.broker_factory_manager = broker_factory_manager
 
         self.brokers: Dict[str, BrokerWebSocketClient] = {}
         self.dbfi_session_managers = {}  # market별 DBFI 세션 매니저
+        
+        # 시장별 설정 로드
+        if self.market_type == MarketType.DOMESTIC:
+            self.dbfi_config = config.dbfi.get_config_for_market(MarketType.DOMESTIC)
+            # logger.debug("🔑 [국내] DBFI 설정 로드:")
+        else:
+            self.dbfi_config = config.dbfi.get_config_for_market(MarketType.FOREIGN)
+            # logger.debug("🔑 [해외] DBFI 설정 로드:")
+            
+        # logger.debug(f"   API Key: {self.dbfi_config['api_key'][:10]}..." if self.dbfi_config['api_key'] else "   API Key: 설정되지 않음")
+        # logger.debug(f"   API Secret: {'설정됨' if self.dbfi_config['api_secret'] else '설정되지 않음'}")
+        # logger.debug(f"   WebSocket URL: {self.dbfi_config['websocket_url']}")
         
         self.running = False
 
@@ -49,18 +58,17 @@ class BrokerDaemon:
 
     async def start(self, active_markets_info=None):
         """데몬 시작"""
-        logger.debug("Broker Daemon 시작...")
+        logger.debug(f"Broker Daemon 시작... ({self.market_type.value})")
         
-        # 활성화된 시장 정보 저장
-        self.active_markets_info = active_markets_info or {}
+        # # 활성화된 시장 정보 저장
+        # self.active_markets_info = active_markets_info or {}
         
-        if self.active_markets_info:
-            logger.info("활성화된 시장 정보:")
-            for market, info in self.active_markets_info.items():
-                if info.get('is_active'):
-                    market_type = info.get('market_type', 'DOMESTIC')
-                    logger.info(f"  {market}: {market_type}")
-
+        # if self.active_markets_info:
+        #     logger.info("활성화된 시장 정보:")
+        #     for market, info in self.active_markets_info.items():
+        #         if info.get('is_active'):
+        #             market_type = info.get('market_type', 'DOMESTIC')
+        #             logger.info(f"  {market}: {market_type}")
         self.running = True
 
         try:
@@ -109,9 +117,9 @@ class BrokerDaemon:
                     logger.error(f"{broker_name} 브로커 연결 해제 실패: {e}")
             
             # DBFI 세션 매니저 정지
-            for key, session_manager in self.dbfi_session_managers.items():
-                await session_manager.stop()
-                logger.debug(f"{key} DBFI 세션 매니저 정지 완료")
+            # for key, session_manager in self.dbfi_session_managers.items():
+            #     await session_manager.stop()
+            #     logger.debug(f"{key} DBFI 세션 매니저 정지 완료")
 
             # Redis 연결 해제
             self.redis_service.disconnect()
@@ -124,58 +132,67 @@ class BrokerDaemon:
     async def _initialize_brokers(self):
         """활성화된 증권사 브로커들 초기화"""
         try:
-            # 활성화된 시장이 있으면 시장별로 브로커 생성
-            if hasattr(self, 'active_markets_info') and self.active_markets_info:
-                active_markets = [market for market, info in self.active_markets_info.items() if info.get('is_active')]
-                
-                if not active_markets:
-                    logger.warning("활성화된 시장이 없습니다. 기본 설정으로 진행합니다.")
-                    return await self._initialize_default_brokers()
-                
-                # 활성화된 시장별로 브로커 생성
-                enabled_brokers = self.config.broker.enabled_brokers
-                
-                for market in active_markets:
-                    market_info = self.active_markets_info[market]
-                    market_type_str = market_info.get('market_type', 'DOMESTIC')
-                    market_type = MarketType.DOMESTIC if market_type_str == 'DOMESTIC' else MarketType.FOREIGN
-                    
-                    logger.info(f"{market} 시장 ({market_type.value}) 브로커 초기화 중...")
-                    
-                    for broker_name in enabled_brokers:
-                        try:
-                            # 🔥 모든 브로커를 기본 방식으로 처리 (세션 매니저 사용 안 함)
-                            total_symbols = self.config.broker.watch_symbols_domestic if market_type == MarketType.DOMESTIC else self.config.broker.watch_symbols_foreign
-                            actual_session_count = self._calculate_required_sessions(broker_name, total_symbols)
-                            
-                            logger.info(f"{broker_name}-{market}: 총 {len(total_symbols)}개 종목, {actual_session_count}개 세션 필요")
-                            
-                            # 필요한 세션만 생성
-                            for session_id in range(actual_session_count):
-                                broker_key = f"{broker_name}_{session_id}" if actual_session_count > 1 else broker_name
-                                
-                                # MarketType을 전달하여 브로커 생성
-                                broker = self.broker_factory_manager.factory.create_broker(broker_name, market_type=market_type)
-                                if broker:
-                                    self.brokers[broker_key] = broker
-                                    logger.info(f"{broker_key} 브로커 초기화 완료 (세션 {session_id + 1}/{actual_session_count}, {market_type.value})")
-                                else:
-                                    logger.error(f"{broker_key} 브로커 생성 실패")
-                            
-                        except Exception as e:
-                            logger.error(f"{broker_name}-{market} 브로커 초기화 실패: {e}")
-                            # 다른 브로커는 계속 진행
-                            continue
+            # 🔥 시장 정보 없이 현재 market_type 사용
+            enabled_brokers = self.config.broker.enabled_brokers
+            
+            # 시장 타입에 따른 종목 리스트 선택
+            if self.market_type == MarketType.DOMESTIC:
+                total_symbols = self.config.broker.watch_symbols_domestic
+                market_name = "국내"
+                prefix="d"
             else:
-                # 시장 정보가 없으면 기본 설정으로 초기화
-                return await self._initialize_default_brokers()
+                total_symbols = self.config.broker.watch_symbols_foreign
+                market_name = "해외"
+                prefix="f"
+            
+            logger.info(f"🔧 {market_name} 브로커 초기화 중... (종목: {len(total_symbols)}개)")
+            
+            for broker_name in enabled_brokers:
+                try:
+                    actual_session_count = self._calculate_required_sessions(broker_name, total_symbols)
+                    
+                    logger.info(f"{broker_name}: 총 {len(total_symbols)}개 종목, {actual_session_count}개 세션 필요")
+                    
+                    # 필요한 세션만 생성
+                    for session_id in range(actual_session_count):
+                        broker_key = f"{prefix}_{broker_name}_{session_id}" if actual_session_count > 1 else f"{prefix}{broker_name}"
+                        
+                        # 시장별 설정으로 브로커 설정 생성
+                        broker_config = BrokerConfig(
+                            api_key=self.dbfi_config['api_key'],
+                            api_secret=self.dbfi_config['api_secret'],
+                            websocket_url=self.dbfi_config['websocket_url'],
+                            batch_size=self.dbfi_config['batch_size'],
+                            available_sessions=self.dbfi_config['available_sessions'],
+                            market_type=self.market_type
+                        )
+                        
+                        # 브로커 생성 시 config와 market_type 전달
+                        broker = self.broker_factory_manager.factory.create_broker(
+                            broker_name, 
+                            config=broker_config,
+                            market_type=self.market_type
+                        )
+                        
+                        if broker:
+                            self.brokers[broker_key] = broker
+                            logger.info(f"{broker_key} 브로커 초기화 완료 (세션 {session_id + 1}/{actual_session_count}, {self.market_type.value})")
+                        else:
+                            logger.error(f"{broker_key} 브로커 생성 실패")
+                    
+                except Exception as e:
+                    logger.error(f"{broker_name} 브로커 초기화 실패: {e}")
+                    # 다른 브로커는 계속 진행
+                    continue
             
             if not self.brokers:
-                raise BrokerConnectionError("사용 가능한 브로커가 없습니다")
+                raise BrokerConnectionError(f"사용 가능한 {market_name} 브로커가 없습니다")
                 
         except Exception as e:
             logger.error(f"브로커 초기화 실패: {e}")
             raise
+
+
     # async def _initialize_brokers(self):
     #     """활성화된 증권사 브로커들 초기화"""
     #     try:
@@ -199,30 +216,23 @@ class BrokerDaemon:
                     
     #                 for broker_name in enabled_brokers:
     #                     try:
-    #                         if broker_name == 'dbfi':
-    #                             # DBFI는 세션 매니저로 관리
-    #                             session_manager = DBFISessionManager(token=self.config.dbfi.api_key, market_type=market_type)
-    #                             await session_manager.start()
-    #                             self.dbfi_session_managers[f"{broker_name}_{market}"] = session_manager
-    #                             logger.info(f"{broker_name}-{market}: DBFI 세션 매니저 초기화 완료")
-    #                         else:
-    #                             # 기존 방식
-    #                             total_symbols = self.config.broker.watch_symbols_domestic if market_type == MarketType.DOMESTIC else self.config.broker.watch_symbols_foreign
-    #                             actual_session_count = self._calculate_required_sessions(broker_name, total_symbols)
+    #                         # 🔥 모든 브로커를 기본 방식으로 처리 (세션 매니저 사용 안 함)
+    #                         total_symbols = self.config.broker.watch_symbols_domestic if market_type == MarketType.DOMESTIC else self.config.broker.watch_symbols_foreign
+    #                         actual_session_count = self._calculate_required_sessions(broker_name, total_symbols)
+                            
+    #                         logger.info(f"{broker_name}-{market}: 총 {len(total_symbols)}개 종목, {actual_session_count}개 세션 필요")
+                            
+    #                         # 필요한 세션만 생성
+    #                         for session_id in range(actual_session_count):
+    #                             broker_key = f"{broker_name}_{session_id}" if actual_session_count > 1 else broker_name
                                 
-    #                             logger.info(f"{broker_name}-{market}: 총 {len(total_symbols)}개 종목, {actual_session_count}개 세션 필요")
-                                
-    #                             # 필요한 세션만 생성
-    #                             for session_id in range(actual_session_count):
-    #                                 broker_key = f"{broker_name}_{market}_{session_id}" if actual_session_count > 1 else f"{broker_name}_{market}"
-                                    
-    #                                 # MarketType을 전달하여 브로커 생성
-    #                                 broker = self.broker_factory_manager.factory.create_broker(broker_name, market_type=market_type)
-    #                                 if broker:
-    #                                     self.brokers[broker_key] = broker
-    #                                     logger.info(f"{broker_key} 브로커 초기화 완료 (세션 {session_id + 1}/{actual_session_count}, {market_type.value})")
-    #                                 else:
-    #                                     logger.error(f"{broker_key} 브로커 생성 실패")
+    #                             # MarketType을 전달하여 브로커 생성
+    #                             broker = self.broker_factory_manager.factory.create_broker(broker_name, market_type=market_type)
+    #                             if broker:
+    #                                 self.brokers[broker_key] = broker
+    #                                 logger.info(f"{broker_key} 브로커 초기화 완료 (세션 {session_id + 1}/{actual_session_count}, {market_type.value})")
+    #                             else:
+    #                                 logger.error(f"{broker_key} 브로커 생성 실패")
                             
     #                     except Exception as e:
     #                         logger.error(f"{broker_name}-{market} 브로커 초기화 실패: {e}")
@@ -232,7 +242,7 @@ class BrokerDaemon:
     #             # 시장 정보가 없으면 기본 설정으로 초기화
     #             return await self._initialize_default_brokers()
             
-    #         if not self.brokers and not self.dbfi_session_managers:
+    #         if not self.brokers:
     #             raise BrokerConnectionError("사용 가능한 브로커가 없습니다")
                 
     #     except Exception as e:
@@ -257,7 +267,7 @@ class BrokerDaemon:
                     for session_id in range(actual_session_count):
                         broker_key = f"{broker_name}_{session_id}" if actual_session_count > 1 else broker_name
                         
-                        broker = self.broker_factory_manager.factory.create_broker(broker_name, market_type=MarketType.DOMESTIC)
+                        broker = self.broker_factory_manager.factory.create_broker(broker_name, market_type=self.market_type)
                         if broker:
                             self.brokers[broker_key] = broker
                             logger.info(f"{broker_key} 브로커 초기화 완료 (세션 {session_id + 1}/{actual_session_count})")
@@ -299,17 +309,24 @@ class BrokerDaemon:
         
         return actual_sessions
 
+    # def _get_broker_batch_size(self, broker_name: str) -> int:
+    #     if '_' in broker_name:
+    #         base_name = broker_name.split('_')[1]  # d_dbfi_0 -> dbfi
+    #     else:
+    #         base_name = broker_name.lstrip('d').lstrip('f')  # ddbfi/fdbfi -> dbfi
+            
+    #     if base_name == 'dbfi':
+    #         return self.config.dbfi.batch_size
+    #     else:
+    #         return 20  # 기본값
     def _get_broker_batch_size(self, broker_name: str) -> int:
-        """브로커별 배치 크기 반환"""
-        base_name = broker_name.split('_')[0]  # dbfi_0 -> dbfi
-        if base_name == 'dbfi':
+        if 'dbfi' in broker_name:  # ddbfi, fdbfi, d_dbfi_0 모두 포함
             return self.config.dbfi.batch_size
         else:
             return 20  # 기본값
 
     def _get_symbols_for_session(self, broker_name: str, session_id: int, total_symbols: list) -> list:
         """특정 브로커 세션이 구독해야 할 종목 리스트 반환"""
-        base_name = broker_name.split('_')[0]
         batch_size = self._get_broker_batch_size(broker_name)
         
         # 세션별 종목 분할
@@ -351,10 +368,18 @@ class BrokerDaemon:
                     all_symbols = self.config.broker.watch_symbols_foreign
                 
                 # 세션 ID 추출 (dbfi_0 -> 0, dbfi -> 0)
+                # session_id = 0
+                # if '_' in broker_name:
+                #     # d_dbfi_1 -> 1 추출
+                #     parts = broker_name.split('_')
+                #     session_id = int(parts[-1]) if len(parts) > 2 else 0
                 session_id = 0
                 if '_' in broker_name:
-                    session_id = int(broker_name.split('_')[1])
-                
+                    try:
+                        session_id = int(broker_name.split('_')[-1])  # 'd_dbfi_1' -> '1' -> 1
+                    except (IndexError, ValueError):
+                        session_id = 0
+                                
                 # 이 세션이 구독해야 할 종목들
                 symbols = self._get_symbols_for_session(broker_name, session_id, all_symbols)
                 

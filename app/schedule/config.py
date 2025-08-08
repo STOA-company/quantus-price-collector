@@ -13,19 +13,8 @@ load_dotenv()
 
 
 @dataclass
-class MarketHours:
-    """시장 운영시간 설정 (환경변수에서만 로드)"""
-    pre_market_start: str     # 장 시작 전 시작 시간
-    market_open: str          # 장 시작 시간
-    market_close: str         # 장 마감 시간
-    after_market_end: str     # 장 마감 후 종료 시간
-
-
-@dataclass
 class SchedulerConfig:
     """스케줄러 설정"""
-    # 시장 운영시간 (환경변수에서 로드) - 기본값 없는 필드를 먼저
-    market_hours: MarketHours
     
     # 기본 설정
     enabled: bool = True
@@ -41,21 +30,7 @@ class SchedulerConfig:
 
 def load_scheduler_config() -> SchedulerConfig:
     """환경변수에서 스케줄러 설정 로드"""
-    # 시장 운영시간 - 환경변수 필수 (기본값 없음)
-    pre_market_time = os.getenv('PRE_MARKET_TIME')
-    market_open_time = os.getenv('MARKET_OPEN_TIME') 
-    market_close_time = os.getenv('MARKET_CLOSE_TIME')
-    after_market_time = os.getenv('AFTER_MARKET_TIME')
-    
-    if not all([pre_market_time, market_open_time, market_close_time, after_market_time]):
-        raise ValueError("시장 운영시간 환경변수가 설정되지 않았습니다. PRE_MARKET_TIME, MARKET_OPEN_TIME, MARKET_CLOSE_TIME, AFTER_MARKET_TIME을 설정해주세요.")
-    
-    market_hours = MarketHours(
-        pre_market_start=pre_market_time,
-        market_open=market_open_time,
-        market_close=market_close_time,
-        after_market_end=after_market_time
-    )
+    # 시장 운영시간은 date_utils.py에서 관리
     
     # 스케줄러 모드
     scheduler_mode = os.getenv('SCHEDULER_MODE', 'time_based')
@@ -79,9 +54,8 @@ def load_scheduler_config() -> SchedulerConfig:
         # 파싱 실패 시 기본값 사용
         markets = ["KR", "US"]
     
-    # 설정 생성 (market_hours를 첫 번째 매개변수로)
+    # 설정 생성
     config = SchedulerConfig(
-        market_hours=market_hours,
         enabled=os.getenv('ENABLE_MARKET_SCHEDULER', 'true').lower() == 'true',
         mode=mode,
         check_interval=int(os.getenv('SCHEDULER_CHECK_INTERVAL', '60')),

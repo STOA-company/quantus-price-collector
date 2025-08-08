@@ -1,6 +1,7 @@
 import os
 from typing import Optional, List
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 
 class RedisConfig(BaseSettings):
@@ -24,31 +25,76 @@ class RedisConfig(BaseSettings):
     redis_socket_connect_timeout: int = 5
     redis_socket_timeout: int = 5
 
+
 class DBFIConfig(BaseSettings):
-    """DBFI 설정"""
+    """DBFI 설정 - 국내/해외 별도 AppKey 지원"""
     model_config = SettingsConfigDict(
         env_file=".env",
         env_ignore_empty=True,
         extra="ignore",
-        env_prefix="DBFI_",
-        field_mapping={
-            'api_key': 'API_KEY',
-            'api_secret': 'API_SECRET',
-            'heartbeat_timeout': 'HEARTBEAT_TIMEOUT',
-            'reconnect_delay': 'RECONNECT_DELAY',
-            'websocket_url': 'WS_URL',
-            'batch_size': 'BATCH_SIZE',
-            'available_sessions': 'AVAILABLE_SESSIONS'
-        }
     )
     
-    api_key: str = ""
-    api_secret: str = ""
-    heartbeat_timeout: float = 10.0
-    reconnect_delay: float = 5.0
-    websocket_url: str = "wss://openapi.dbsec.co.kr:7070"
-    batch_size: int = 20
-    available_sessions: int = 2
+    # 🔥 국내 시장 전용 설정
+    domestic_api_key: str = Field(default="", alias="DBFI_DOMESTIC_API_KEY")
+    domestic_api_secret: str = Field(default="", alias="DBFI_DOMESTIC_API_SECRET")
+    domestic_ws_url: str = Field(default="wss://openapi.dbsec.co.kr:7070", alias="DBFI_DOMESTIC_WS_URL")
+    domestic_batch_size: int = Field(default=20, alias="DBFI_DOMESTIC_BATCH_SIZE")
+    domestic_available_sessions: int = Field(default=2, alias="DBFI_DOMESTIC_AVAILABLE_SESSIONS")
+    
+    # 🔥 해외 시장 전용 설정
+    foreign_api_key: str = Field(default="", alias="DBFI_FOREIGN_API_KEY")
+    foreign_api_secret: str = Field(default="", alias="DBFI_FOREIGN_API_SECRET")
+    foreign_ws_url: str = Field(default="wss://openapi.dbsec.co.kr:7070", alias="DBFI_FOREIGN_WS_URL")
+    foreign_batch_size: int = Field(default=20, alias="DBFI_FOREIGN_BATCH_SIZE")
+    foreign_available_sessions: int = Field(default=2, alias="DBFI_FOREIGN_AVAILABLE_SESSIONS")
+    
+    # 기존 통합 설정 (하위 호환성)
+    api_key: str = Field(default="", alias="DBFI_API_KEY")
+    api_secret: str = Field(default="", alias="DBFI_API_SECRET")
+    websocket_url: str = Field(default="wss://openapi.dbsec.co.kr:7070", alias="DBFI_WS_URL")
+    batch_size: int = Field(default=20, alias="DBFI_BATCH_SIZE")
+    available_sessions: int = Field(default=2, alias="DBFI_AVAILABLE_SESSIONS")
+    
+    # 공통 설정
+    heartbeat_timeout: float = Field(default=10.0, alias="DBFI_HEARTBEAT_TIMEOUT")
+    reconnect_delay: float = Field(default=5.0, alias="DBFI_RECONNECT_DELAY")
+
+    def get_config_for_market(self, market_type) -> dict:
+        """시장 타입에 따른 설정 반환"""
+        from ..brokers.base import MarketType
+        
+        if market_type == MarketType.DOMESTIC:
+            config = {
+                'api_key': self.domestic_api_key or self.api_key,
+                'api_secret': self.domestic_api_secret or self.api_secret,
+                'websocket_url': self.domestic_ws_url or self.websocket_url,
+                'batch_size': self.domestic_batch_size or self.batch_size,
+                'available_sessions': self.domestic_available_sessions or self.available_sessions
+            }
+        else:  # FOREIGN
+            config = {
+                'api_key': self.foreign_api_key or self.api_key,
+                'api_secret': self.foreign_api_secret or self.api_secret,
+                'websocket_url': self.foreign_ws_url or self.websocket_url,
+                'batch_size': self.foreign_batch_size or self.batch_size,
+                'available_sessions': self.foreign_available_sessions or self.available_sessions
+            }
+        
+        # 🔥 로깅 추가
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"🔑 [{market_type.value}] DBFI 설정 로드:")
+        logger.info(f"   API Key: {config['api_key'][:10]}..." if config['api_key'] else "   API Key: 설정되지 않음")
+        logger.info(f"   API Secret: {'설정됨' if config['api_secret'] else '설정되지 않음'}")
+        logger.info(f"   WebSocket URL: {config['websocket_url']}")
+        
+        return config
+    
+    def validate_market_config(self, market_type) -> bool:
+        """시장별 설정 유효성 검증"""
+        config = self.get_config_for_market(market_type)
+        return bool(config['api_key'] and config['api_secret'] and config['websocket_url'])
+
 
 class BrokerConfig(BaseSettings):
     """관심 종목 설정"""
@@ -56,16 +102,11 @@ class BrokerConfig(BaseSettings):
         env_file=".env",
         env_ignore_empty=True,
         extra="ignore",
-        field_mapping={
-            'watch_symbols_domestic': 'WATCH_SYMBOLS_DOMESTIC',
-            'watch_symbols_foreign': 'WATCH_SYMBOLS_FOREIGN',
-            'enabled_brokers': 'ENABLED_BROKERS'
-        }
     )
 
-    watch_symbols_domestic: List[str] = [] 
-    watch_symbols_foreign: List[str] = [] 
-    enabled_brokers: List[str] = []
+    watch_symbols_domestic: List[str] = Field(default=[], alias="WATCH_SYMBOLS_DOMESTIC")
+    watch_symbols_foreign: List[str] = Field(default=[], alias="WATCH_SYMBOLS_FOREIGN")
+    enabled_brokers: List[str] = Field(default=[], alias="ENABLED_BROKERS")
 
 
 class AppConfig(BaseSettings):

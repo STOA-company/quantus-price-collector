@@ -61,10 +61,7 @@ class MarketScheduler:
         # TIME_BASED 모드 - 여러 시장 체크
         markets_info = {}
         for market in self.config.markets:
-            if market == "KR":
-                markets_info[market] = is_market_open(market, self.config.market_hours)
-            else:  # US 등 다른 시장
-                markets_info[market] = is_market_open(market)
+            markets_info[market] = is_market_open(market)
         
         # 하나라도 정규시간이면 REGULAR_HOURS
         if any(info["is_trading_hours"] for info in markets_info.values()):
