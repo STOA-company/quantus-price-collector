@@ -58,19 +58,57 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
             # 웹소켓 URL 구성
             ws_url = self._build_websocket_url()
 
-            # ping을 1초마다 날리고 10초 타임아웃 설정
+            # 웹소켓 연결
             self.websocket = await websockets.connect(
                 ws_url,
-                ping_interval=1,  # 1초마다 ping
-                ping_timeout=10,  # 10초 ping 타임아웃
-                close_timeout=5   # 5초 연결 종료 타임아웃
+                ping_interval=5,
+                ping_timeout=15,
             )
-            logger.debug(f"DBFI 웹소켓 연결 성공 (ping: 1초간격): {ws_url}")
+            
+            # 연결 후 서버 초기 응답 대기 (최대 3초)
+            try:
+                initial_response = await asyncio.wait_for(
+                    self.websocket.recv(), 
+                    timeout=3.0
+                )
+                logger.debug(f"DBFI 초기 응답 수신: {initial_response}")
+            except asyncio.TimeoutError:
+                logger.debug("DBFI 초기 응답 없음 (정상)")
+            except Exception as e:
+                logger.warning(f"DBFI 초기 응답 처리 중 오류: {e}")
+            
+            logger.debug(f"DBFI 웹소켓 연결 성공 (ping: 5초간격): {ws_url}")
             return self.websocket
 
         except Exception as e:
             logger.error(f"DBFI 웹소켓 연결 실패: {e}")
             raise
+
+    # async def _connect_websocket(self):
+    #     """DBFI 웹소켓 연결"""
+    #     try:
+    #         # 액세스 토큰 발급
+    #         if not self.access_token:
+    #             self.access_token = self._get_access_token()
+
+    #         # 웹소켓 URL 구성
+    #         ws_url = self._build_websocket_url()
+
+    #         # ping을 1초마다 날리고 10초 타임아웃 설정
+    #         self.websocket = await websockets.connect(
+    #             ws_url,
+    #             ping_interval=5,  # 1초 → 5초로 증가
+    #             ping_timeout=15,  # 10초 → 15초로 증가
+    #             # ping_interval=1,  # 1초마다 ping
+    #             # ping_timeout=10,  # 10초 ping 타임아웃
+    #             # close_timeout=5   # 5초 연결 종료 타임아웃
+    #         )
+    #         logger.debug(f"DBFI 웹소켓 연결 성공 (ping: 1초간격): {ws_url}")
+    #         return self.websocket
+
+    #     except Exception as e:
+    #         logger.error(f"DBFI 웹소켓 연결 실패: {e}")
+    #         raise
 
     async def disconnect(self):
         """웹소켓 연결 해제"""
@@ -97,13 +135,74 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
             
             # 메시지 전송
             await self.websocket.send(json.dumps(subscribe_message))
-            
             logger.debug(f"DBFI 종목 구독 요청: {symbol}")
-            return True
             
+            # 구독 응답 대기 (최대 3초)
+            try:
+                response = await asyncio.wait_for(
+                    self.websocket.recv(), 
+                    timeout=3.0
+                )
+                response_data = json.loads(response)
+                
+                # 응답 헤더 체크
+                header = response_data.get('header', {})
+                rsp_cd = header.get('rsp_cd', '')
+                rsp_msg = header.get('rsp_msg', '')
+                
+                if rsp_cd == '00000':  # 정상처리
+                    logger.debug(f"DBFI 구독 성공: {symbol} - {rsp_msg}")
+                    return True
+                elif rsp_cd == '10011':  # 계좌별 허용 세션 수 초과
+                    logger.error(f"🚨 DBFI 구독 실패 - 세션 수 초과: {symbol}")
+                    logger.error(f"   응답: {rsp_msg}")
+                    logger.error(f"   해결방안: 다른 세션을 종료하거나 세션 수를 줄여주세요")
+                    return False
+                elif rsp_cd == 'IGW00203':  # 분당 접속 횟수 초과 (6TPM)
+                    logger.error(f"🚨 DBFI 구독 실패 - 접속 빈도 초과: {symbol}")
+                    logger.error(f"   응답: {rsp_msg}")
+                    logger.error(f"   해결방안: 1분 후 재시도하거나 재연결 간격을 늘려주세요")
+                    return False
+                else:  # 기타 에러
+                    logger.warning(f"DBFI 구독 응답 에러: {symbol}")
+                    logger.warning(f"   에러코드: {rsp_cd}")
+                    logger.warning(f"   에러메시지: {rsp_msg}")
+                    return False
+                    
+            except asyncio.TimeoutError:
+                logger.warning(f"DBFI 구독 응답 타임아웃: {symbol} (3초)")
+                return False
+            except json.JSONDecodeError as e:
+                logger.error(f"DBFI 구독 응답 파싱 실패: {symbol}, {e}")
+                return False
+                
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.warning(f"DBFI 종목 구독 중 연결 종료: {symbol}, {e}")
+            self.websocket = None  # 연결 상태 정리
+            return False
         except Exception as e:
             logger.error(f"DBFI 종목 구독 실패: {symbol}, {e}")
             return False
+
+    # async def _subscribe_symbol_impl(self, symbol: str) -> bool:
+    #     """종목 구독 구현"""
+    #     try:
+    #         if not self.is_connected():
+    #             logger.error("웹소켓이 연결되지 않았습니다")
+    #             return False
+            
+    #         # 구독 메시지 생성 (설정된 MarketType 사용)
+    #         subscribe_message = self.message_builder.build_subscribe_message(symbol, self.market_type, self.access_token)
+            
+    #         # 메시지 전송
+    #         await self.websocket.send(json.dumps(subscribe_message))
+            
+    #         logger.debug(f"DBFI 종목 구독 요청: {symbol}")
+    #         return True
+            
+    #     except Exception as e:
+    #         logger.error(f"DBFI 종목 구독 실패: {symbol}, {e}")
+    #         return False
 
     async def _unsubscribe_symbol_impl(self, symbol: str) -> bool:
         """종목 구독 해제 구현"""

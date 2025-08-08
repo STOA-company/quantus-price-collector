@@ -32,7 +32,7 @@ class BrokerDaemon:
         self.running = False
 
         self.reconnect_intervals = {
-            'dbfi': 5
+            'dbfi': 30
         }
         
         self.max_reconnect_attempts = 10  # 최대 재연결 시도 횟수
@@ -122,7 +122,7 @@ class BrokerDaemon:
             logger.error(f"Broker Daemon 종료 중 오류: {e}")
 
     async def _initialize_brokers(self):
-        """활성화된 증권사 브로커들 초기화 (기본 브로커 방식 사용)"""
+        """활성화된 증권사 브로커들 초기화"""
         try:
             # 활성화된 시장이 있으면 시장별로 브로커 생성
             if hasattr(self, 'active_markets_info') and self.active_markets_info:
@@ -334,6 +334,14 @@ class BrokerDaemon:
                 await broker.connect()
                 reconnect_count = 0
 
+                # 웹소켓 연결 성공 시 구독 상태 초기화 (새로운 연결에서는 이전 구독이 없음)
+                if broker_name in self.requested_symbols:
+                    self.requested_symbols[broker_name].clear()
+                if broker_name in self.confirmed_symbols:
+                    self.confirmed_symbols[broker_name].clear()
+                subscribed_symbols.clear()
+                logger.debug(f"{broker_name} 연결 성공 - 구독 상태 초기화")
+
                 # 세션별 종목 분할 및 구독
                 # 브로커의 시장 타입에 따라 종목 리스트 결정
                 broker_market_type = getattr(broker, 'market_type', MarketType.DOMESTIC)
@@ -415,9 +423,14 @@ class BrokerDaemon:
                 logger.debug(f"{broker_name} {wait_time}초 후 재연결 시도")
                 await asyncio.sleep(wait_time)
                 
-                # 재연결 시 로컬 구독 상태만 초기화 (requested_symbols는 유지)
+                # 재연결 시 모든 구독 상태 초기화 (웹소켓 연결이 끊어지면 서버에서도 구독이 해제됨)
                 subscribed_symbols.clear()
-                logger.debug(f"{broker_name} 재연결로 인한 로컬 구독 상태 초기화")
+                # 글로벌 구독 상태도 초기화하여 재구독 가능하도록 함
+                if broker_name in self.requested_symbols:
+                    self.requested_symbols[broker_name].clear()
+                if broker_name in self.confirmed_symbols:
+                    self.confirmed_symbols[broker_name].clear()
+                logger.debug(f"{broker_name} 재연결로 인한 모든 구독 상태 초기화")
                 
             except Exception as e:
                 logger.error(f"{broker_name} 예상치 못한 오류: {e}")
