@@ -13,6 +13,12 @@ echo "🚀 Starting Blue-Green deployment with image tag: $IMAGE_TAG"
 # 프로젝트 디렉토리로 이동
 cd $PROJECT_DIR
 
+# 최신 이미지 강제 pull
+echo "📥 Pulling latest image with tag: $IMAGE_TAG"
+export GITHUB_REPOSITORY_OWNER=${GITHUB_REPOSITORY_OWNER:-stoa-company}
+export IMAGE_TAG=${IMAGE_TAG}
+docker pull ghcr.io/${GITHUB_REPOSITORY_OWNER}/quantus-price-collector:${IMAGE_TAG}
+
 # 기본 서비스들 먼저 시작 (redis, nginx)
 echo "🔧 Starting base services (redis, nginx)..."
 docker compose up -d redis nginx
