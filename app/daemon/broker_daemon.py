@@ -24,7 +24,7 @@ class BrokerDaemon:
         self.broker_factory_manager = broker_factory_manager
 
         self.brokers: Dict[str, BrokerWebSocketClient] = {}
-        self.dbfi_session_managers = {}  # market별 DBFI 세션 매니저
+        # self.dbfi_session_managers = {}  # market별 DBFI 세션 매니저
         
         # 시장별 설정 로드
         if self.market_type == MarketType.DOMESTIC:
@@ -50,6 +50,17 @@ class BrokerDaemon:
         self.requested_symbols: Dict[str, set] = {}  # 브로커별 요청한 종목들
         self.confirmed_symbols: Dict[str, set] = {}  # 브로커별 확인된 종목들
 
+        # 🔥 지속적 재구독을 위한 새로운 변수들
+        self.pending_resubscriptions: Dict[str, set] = {}  # 브로커별 재구독 대기 종목
+        self.resubscription_tasks: Dict[str, asyncio.Task] = {}  # 브로커별 재구독 태스크
+
+        self.resubscription_config = {
+            'max_retries': 10,           # 최대 10번 재시도
+            'base_interval': 10,         # 기본 30초 간격
+            'max_interval': 300,         # 최대 5분 간격
+            'exponential_backoff': True  # 지수 백오프 사용
+        }
+
         self.stats = {
             'total_messages': 0,
             'error_count': 0,
@@ -59,16 +70,6 @@ class BrokerDaemon:
     async def start(self, active_markets_info=None):
         """데몬 시작"""
         logger.debug(f"Broker Daemon 시작... ({self.market_type.value})")
-        
-        # # 활성화된 시장 정보 저장
-        # self.active_markets_info = active_markets_info or {}
-        
-        # if self.active_markets_info:
-        #     logger.info("활성화된 시장 정보:")
-        #     for market, info in self.active_markets_info.items():
-        #         if info.get('is_active'):
-        #             market_type = info.get('market_type', 'DOMESTIC')
-        #             logger.info(f"  {market}: {market_type}")
         self.running = True
 
         try:
@@ -103,31 +104,63 @@ class BrokerDaemon:
 
     async def stop(self):
         """데몬 정지"""
-        logger.debug("Broker Daemon 정지 중...")
-        
-        self.running = False
+        logger.info("🛑 Broker Daemon 정지 시작...")
         
         try:
-            # 모든 브로커 연결 해제
+            # 🔥 1단계: 먼저 모든 브로커 연결 해제 (running=True 상태에서)
+            logger.debug("1단계: 브로커 연결 해제 중...")
             for broker_name, broker in self.brokers.items():
                 try:
-                    await broker.disconnect()
-                    logger.debug(f"{broker_name} 브로커 연결 해제됨")
+                    if broker.is_connected():
+                        await broker.disconnect()
+                        logger.debug(f"✅ [{broker_name}] 브로커 연결 해제됨")
                 except Exception as e:
-                    logger.error(f"{broker_name} 브로커 연결 해제 실패: {e}")
+                    logger.error(f"❌ [{broker_name}] 브로커 연결 해제 실패: {e}")
             
-            # DBFI 세션 매니저 정지
-            # for key, session_manager in self.dbfi_session_managers.items():
-            #     await session_manager.stop()
-            #     logger.debug(f"{key} DBFI 세션 매니저 정지 완료")
-
-            # Redis 연결 해제
-            self.redis_service.disconnect()
+            # 🔥 2단계: 재구독 태스크들 취소
+            logger.debug("2단계: 재구독 태스크 취소 중...")
+            cancel_tasks = []
+            for broker_name, task in self.resubscription_tasks.items():
+                if not task.done():
+                    logger.debug(f"🔄 [{broker_name}] 재구독 태스크 취소 중...")
+                    task.cancel()
+                    cancel_tasks.append(task)
             
-            logger.debug("Broker Daemon 정상 종료됨")
+            # 취소된 태스크들 완료 대기 (짧은 타임아웃)
+            if cancel_tasks:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*cancel_tasks, return_exceptions=True),
+                        timeout=5.0
+                    )
+                    logger.debug("✅ 모든 재구독 태스크 취소 완료")
+                except asyncio.TimeoutError:
+                    logger.warning("⚠️ 일부 재구독 태스크 취소 타임아웃")
+            
+            # 🔥 3단계: 이제 running을 False로 설정 (브로커 루프들 종료)
+            logger.debug("3단계: 브로커 루프 종료 신호 전송...")
+            self.running = False
+            
+            # 🔥 4단계: 상태 정리
+            logger.debug("4단계: 상태 정리 중...")
+            self.resubscription_tasks.clear()
+            self.pending_resubscriptions.clear()
+            self.requested_symbols.clear()
+            self.confirmed_symbols.clear()
+            
+            # 🔥 5단계: Redis 연결 해제
+            logger.debug("5단계: Redis 연결 해제 중...")
+            if self.redis_service:
+                self.redis_service.disconnect()
+                logger.debug("✅ Redis 연결 해제됨")
+            
+            logger.info("✅ Broker Daemon 정상 종료 완료")
             
         except Exception as e:
-            logger.error(f"Broker Daemon 종료 중 오류: {e}")
+            logger.error(f"💥 Broker Daemon 종료 중 오류: {e}")
+            # 강제 종료
+            self.running = False
+            raise
 
     async def _initialize_brokers(self):
         """활성화된 증권사 브로커들 초기화"""
@@ -191,63 +224,6 @@ class BrokerDaemon:
         except Exception as e:
             logger.error(f"브로커 초기화 실패: {e}")
             raise
-
-
-    # async def _initialize_brokers(self):
-    #     """활성화된 증권사 브로커들 초기화"""
-    #     try:
-    #         # 활성화된 시장이 있으면 시장별로 브로커 생성
-    #         if hasattr(self, 'active_markets_info') and self.active_markets_info:
-    #             active_markets = [market for market, info in self.active_markets_info.items() if info.get('is_active')]
-                
-    #             if not active_markets:
-    #                 logger.warning("활성화된 시장이 없습니다. 기본 설정으로 진행합니다.")
-    #                 return await self._initialize_default_brokers()
-                
-    #             # 활성화된 시장별로 브로커 생성
-    #             enabled_brokers = self.config.broker.enabled_brokers
-                
-    #             for market in active_markets:
-    #                 market_info = self.active_markets_info[market]
-    #                 market_type_str = market_info.get('market_type', 'DOMESTIC')
-    #                 market_type = MarketType.DOMESTIC if market_type_str == 'DOMESTIC' else MarketType.FOREIGN
-                    
-    #                 logger.info(f"{market} 시장 ({market_type.value}) 브로커 초기화 중...")
-                    
-    #                 for broker_name in enabled_brokers:
-    #                     try:
-    #                         # 🔥 모든 브로커를 기본 방식으로 처리 (세션 매니저 사용 안 함)
-    #                         total_symbols = self.config.broker.watch_symbols_domestic if market_type == MarketType.DOMESTIC else self.config.broker.watch_symbols_foreign
-    #                         actual_session_count = self._calculate_required_sessions(broker_name, total_symbols)
-                            
-    #                         logger.info(f"{broker_name}-{market}: 총 {len(total_symbols)}개 종목, {actual_session_count}개 세션 필요")
-                            
-    #                         # 필요한 세션만 생성
-    #                         for session_id in range(actual_session_count):
-    #                             broker_key = f"{broker_name}_{session_id}" if actual_session_count > 1 else broker_name
-                                
-    #                             # MarketType을 전달하여 브로커 생성
-    #                             broker = self.broker_factory_manager.factory.create_broker(broker_name, market_type=market_type)
-    #                             if broker:
-    #                                 self.brokers[broker_key] = broker
-    #                                 logger.info(f"{broker_key} 브로커 초기화 완료 (세션 {session_id + 1}/{actual_session_count}, {market_type.value})")
-    #                             else:
-    #                                 logger.error(f"{broker_key} 브로커 생성 실패")
-                            
-    #                     except Exception as e:
-    #                         logger.error(f"{broker_name}-{market} 브로커 초기화 실패: {e}")
-    #                         # 다른 브로커는 계속 진행
-    #                         continue
-    #         else:
-    #             # 시장 정보가 없으면 기본 설정으로 초기화
-    #             return await self._initialize_default_brokers()
-            
-    #         if not self.brokers:
-    #             raise BrokerConnectionError("사용 가능한 브로커가 없습니다")
-                
-    #     except Exception as e:
-    #         logger.error(f"브로커 초기화 실패: {e}")
-    #         raise
     
     async def _initialize_default_brokers(self):
         """기본 설정으로 브로커 초기화 (기존 방식)"""
@@ -309,16 +285,6 @@ class BrokerDaemon:
         
         return actual_sessions
 
-    # def _get_broker_batch_size(self, broker_name: str) -> int:
-    #     if '_' in broker_name:
-    #         base_name = broker_name.split('_')[1]  # d_dbfi_0 -> dbfi
-    #     else:
-    #         base_name = broker_name.lstrip('d').lstrip('f')  # ddbfi/fdbfi -> dbfi
-            
-    #     if base_name == 'dbfi':
-    #         return self.config.dbfi.batch_size
-    #     else:
-    #         return 20  # 기본값
     def _get_broker_batch_size(self, broker_name: str) -> int:
         if 'dbfi' in broker_name:  # ddbfi, fdbfi, d_dbfi_0 모두 포함
             return self.config.dbfi.batch_size
@@ -349,6 +315,9 @@ class BrokerDaemon:
                 logger.debug(f"{broker_name} 브로커 연결 시도...")
 
                 await broker.connect()
+                
+                self._initialize_resubscription_state(broker_name)
+
                 reconnect_count = 0
 
                 # 웹소켓 연결 성공 시 구독 상태 초기화 (새로운 연결에서는 이전 구독이 없음)
@@ -367,12 +336,6 @@ class BrokerDaemon:
                 else:
                     all_symbols = self.config.broker.watch_symbols_foreign
                 
-                # 세션 ID 추출 (dbfi_0 -> 0, dbfi -> 0)
-                # session_id = 0
-                # if '_' in broker_name:
-                #     # d_dbfi_1 -> 1 추출
-                #     parts = broker_name.split('_')
-                #     session_id = int(parts[-1]) if len(parts) > 2 else 0
                 session_id = 0
                 if '_' in broker_name:
                     try:
@@ -401,9 +364,9 @@ class BrokerDaemon:
                     # 세션별 고유 종목이므로 이미 구독한 종목은 건너뛰기
                     if symbol not in subscribed_symbols and symbol not in self.requested_symbols[broker_name]:
                         success = await broker.subscribe_symbol(symbol)
+                        self.requested_symbols[broker_name].add(symbol)
                         if success:
                             subscribed_symbols.add(symbol)
-                            self.requested_symbols[broker_name].add(symbol)
                             logger.debug(f"{broker_name}: {symbol} 구독 요청 (총 요청: {len(self.requested_symbols[broker_name])}개)")
                             
                             # 구독 요청 간격 (마지막 종목 제외)
@@ -430,32 +393,40 @@ class BrokerDaemon:
 
             except BrokerConnectionError as e:
                 reconnect_count += 1
-                logger.error(
-                    f"{broker_name} 연결 오류 (재시도 {reconnect_count}회): {e}"
-                )
+                logger.error(f"{broker_name} 연결 오류 (재시도 {reconnect_count}회): {e}")
                 
                 # 최대 재연결 시도 횟수 확인
                 if reconnect_count >= self.max_reconnect_attempts:
                     logger.error(f"{broker_name} 최대 재연결 시도 횟수 초과, 브로커 비활성화")
                     break
                 
-                # 재연결 대기 (브로커 타입 추출)
-                base_broker_name = broker_name.split('_')[0]  # dbfi_0 -> dbfi
+                # 🔥 재연결 전에 먼저 기존 요청 종목들을 백업
+                all_requested_symbols = set()
+                if broker_name in self.requested_symbols:
+                    all_requested_symbols = self.requested_symbols[broker_name].copy()
+                
+                # 재연결 대기 (지수 백오프)
+                base_broker_name = broker_name.split('_')[1] if '_' in broker_name else broker_name  # d_dbfi_0 -> dbfi
                 wait_time = min(
                     self.reconnect_intervals.get(base_broker_name, 30) * reconnect_count,
                     300  # 최대 5분
                 )
-                logger.debug(f"{broker_name} {wait_time}초 후 재연결 시도")
+                logger.info(f"🔌 [{broker_name}] {wait_time}초 후 재연결 시도")
                 await asyncio.sleep(wait_time)
                 
-                # 재연결 시 모든 구독 상태 초기화 (웹소켓 연결이 끊어지면 서버에서도 구독이 해제됨)
+                # 🔥 재연결 시 구독 상태 초기화 (웹소켓 연결 끊어지면 서버에서도 구독 해제됨)
                 subscribed_symbols.clear()
-                # 글로벌 구독 상태도 초기화하여 재구독 가능하도록 함
                 if broker_name in self.requested_symbols:
                     self.requested_symbols[broker_name].clear()
                 if broker_name in self.confirmed_symbols:
                     self.confirmed_symbols[broker_name].clear()
-                logger.debug(f"{broker_name} 재연결로 인한 모든 구독 상태 초기화")
+                
+                # 🔥 백업한 종목들을 재구독 대기 목록에 추가
+                if all_requested_symbols:
+                    self._add_to_pending_resubscriptions(broker_name, all_requested_symbols)
+                    logger.info(f"🔄 [{broker_name}] 재연결로 인한 {len(all_requested_symbols)}개 종목 재구독 대기")
+                
+                logger.debug(f"🔄 [{broker_name}] 재연결로 인한 모든 구독 상태 초기화")
                 
             except Exception as e:
                 logger.error(f"{broker_name} 예상치 못한 오류: {e}")
@@ -471,11 +442,18 @@ class BrokerDaemon:
             # 구독 응답 메시지 처리
             if message_type == 'subscribe_response':
                 confirmed_symbols = set(data.get('tr_key', []))
-                # J 프리픽스 제거하여 비교
-                confirmed_clean = {s.replace('J ', '') for s in confirmed_symbols}
+                confirmed_clean = confirmed_symbols.copy()
+
+                if broker_name not in self.confirmed_symbols:
+                    self.confirmed_symbols[broker_name] = set()
+
+                self.confirmed_symbols[broker_name].update(confirmed_clean)
                 
                 logger.debug(f"{broker_name} 구독 응답: {data.get('rsp_msg', '')} - 확인된 종목: {list(confirmed_clean)} ({len(confirmed_clean)}개)")
                 
+                # 확인된 종목 제거
+                self._remove_from_pending_resubscriptions(broker_name, confirmed_clean)
+
                 # 요청한 종목과 확인된 종목 비교
                 if broker_name in self.requested_symbols:
                     requested = self.requested_symbols[broker_name]
@@ -483,11 +461,12 @@ class BrokerDaemon:
                     
                     if missing:
                         logger.warning(f"{broker_name} 누락된 종목: {list(missing)} - 즉시 재구독 시도")
-                        # 누락된 종목 재구독 (비동기로 실행)
-                        asyncio.create_task(self._resubscribe_missing_symbols(broker_name, missing))
+                        # ================================slack 알림추가 필요===============================
+                        # 누락된 종목 재구독 - 
+                        # asyncio.create_task(self._resubscribe_missing_symbols(broker_name, missing))
+                        self._add_to_pending_resubscriptions(broker_name, missing)
                     else:
                         logger.info(f"{broker_name} 모든 요청 종목이 성공적으로 구독됨")
-                
                 return  # 구독 응답은 별도 처리하지 않음
             
             # 실시간 데이터만 검증 및 처리
@@ -561,6 +540,24 @@ class BrokerDaemon:
                         'connected': is_connected,
                         'timestamp': datetime.now().isoformat(),
                         'daemon_stats': self.stats
+                    }
+
+                    pending_symbols = self.pending_resubscriptions.get(broker_name, set())
+                    confirmed_symbols = self.confirmed_symbols.get(broker_name, set())
+                    resubscription_task_running = (
+                        broker_name in self.resubscription_tasks and 
+                        not self.resubscription_tasks[broker_name].done()
+                    )
+                    
+                    status_data['resubscription_status'] = {
+                        'pending_count': len(pending_symbols),
+                        'pending_symbols': list(pending_symbols),
+                        'confirmed_count': len(confirmed_symbols),
+                        'task_running': resubscription_task_running,
+                        'subscription_rate': (
+                            f"{len(confirmed_symbols)}/{len(confirmed_symbols) + len(pending_symbols)}"
+                            if (len(confirmed_symbols) + len(pending_symbols)) > 0 else "0/0"
+                        )
                     }
                     
                     # ping 통계 추가 (base 클래스에서 자동 관리)
@@ -636,33 +633,182 @@ class BrokerDaemon:
                 return
             
             broker = self.brokers[broker_name]
+            retry_count = 0
+            max_retries = self.resubscription_config['max_retries']
             logger.info(f"{broker_name} 재구독 시작: {list(missing_symbols)}")
-            
-            # 재구독 전 잠시 대기 (서버 안정화)
-            await asyncio.sleep(3)
-            
-            for symbol in missing_symbols:
-                try:
-                    success = await broker.subscribe_symbol(symbol)
-                    if success:
-                        # logger.info(f"{broker_name}: {symbol} 재구독 성공")
-                        pass
+
+            try:
+                while retry_count < max_retries and self.running:
+                    if broker_name not in self.pending_resubscriptions:
+                        logger.debug(f"{broker_name} 재구독 대기 목록에 없음, 종료")
+                        break
+                    current_pending = self.pending_resubscriptions[broker_name].copy()
+                    if not current_pending:
+                        logger.debug(f"{broker_name} 모든 종목 구독 완료, 종료")
+                        break
+
+                    retry_count += 1
+
+                    if retry_count == 1:
+                        wait_time = 3  # 첫 시도는 3초 후
                     else:
-                        logger.warning(f"{broker_name}: {symbol} 재구독 실패")
+                        base = self.resubscription_config['base_interval']
+                        max_interval = self.resubscription_config['max_interval']
+                        if self.resubscription_config['exponential_backoff']:
+                            wait_time = min(base * (2 ** (retry_count - 2)), max_interval)
+                        else:
+                            wait_time = base
                     
-                    # 재구독 간격
-                    await asyncio.sleep(1)
+                    logger.info(f"🔄 [{broker_name}] 재구독 시도 #{retry_count} - {wait_time}초 후 시작")
+                    await asyncio.sleep(wait_time)
                     
-                except Exception as e:
-                    logger.error(f"{broker_name}: {symbol} 재구독 중 오류: {e}")
+                    # 브로커 연결 상태 확인
+                    if not broker.is_connected():
+                        logger.warning(f"🔌 [{broker_name}] 브로커 연결 끊김 - 재구독 중단")
+                        break
+                    
+                    successfully_subscribed = set()
+
+                     # 현재 대기 중인 종목들 재구독 시도
+                    for symbol in current_pending:
+                        try:
+                            success = await broker.subscribe_symbol(symbol)
+                            if success:
+                                successfully_subscribed.add(symbol)
+                                logger.info(f"✅ [{broker_name}] {symbol} 재구독 성공 (시도 #{retry_count})")
+                            else:
+                                logger.debug(f"❌ [{broker_name}] {symbol} 재구독 실패 (시도 #{retry_count})")
+                            
+                            await asyncio.sleep(1)  # 구독 간격
+                            
+                        except Exception as e:
+                            logger.error(f"💥 [{broker_name}] {symbol} 재구독 중 오류: {e}")
+                    
+                    # 🔥 성공한 종목들은 대기 목록에서 제거
+                    if successfully_subscribed:
+                        self._remove_from_pending_resubscriptions(broker_name, successfully_subscribed)
+                        logger.info(f"🎉 [{broker_name}] {len(successfully_subscribed)}개 종목 재구독 성공")
+                        
+                        # 부분 성공 시 재시도 카운트 완화
+                        retry_count = max(0, retry_count - 2)
+            
+            except asyncio.CancelledError:
+                logger.info(f"🔄 [{broker_name}] 재구독 태스크 취소됨")
+            except Exception as e:
+                logger.error(f"💥 [{broker_name}] 재구독 중 치명적 오류: {e}")
+            finally:
+                # 🔥 태스크 완료 시 정리
+                self._cleanup_resubscription_task(broker_name)
+                
+                # 남은 종목이 있으면 로깅
+                remaining = self.pending_resubscriptions.get(broker_name, set())
+                if remaining:
+                    if retry_count >= max_retries:
+                        logger.error(f"🚨 [{broker_name}] 최대 재시도 도달 - 실패 종목: {list(remaining)}")
+                    else:
+                        logger.warning(f"⚠️ [{broker_name}] 재구독 중단됨 - 실패 종목: {list(remaining)}")
+
+
+                
+        #         # 재구독 대기 목록에서 종목 제거
+        #         self._remove_from_pending_resubscriptions(broker_name, current_pending)
+                
+            
+        #     # 재구독 전 잠시 대기 (서버 안정화)
+        #     await asyncio.sleep(3)
+            
+        #     for symbol in missing_symbols:
+        #         try:
+        #             success = await broker.subscribe_symbol(symbol)
+        #             if success:
+        #                 # logger.info(f"{broker_name}: {symbol} 재구독 성공")
+        #                 pass
+        #             else:
+        #                 logger.warning(f"{broker_name}: {symbol} 재구독 실패")
+                    
+        #             # 재구독 간격
+        #             await asyncio.sleep(1)
+                    
+        #         except Exception as e:
+        #             logger.error(f"{broker_name}: {symbol} 재구독 중 오류: {e}")
                     
         except Exception as e:
             logger.error(f"{broker_name} 재구독 처리 중 오류: {e}")
 
-    async def run_dbfi_subscribe(self, broker_market_key: str, symbols: list):
-        """DBFI 세션 매니저를 통한 종목 구독"""
-        if broker_market_key not in self.dbfi_session_managers:
-            logger.error(f"{broker_market_key} DBFI 세션 매니저가 없습니다.")
+    def _initialize_resubscription_state(self, broker_name: str):
+        """브로커별 재구독 상태 초기화"""
+        if broker_name not in self.pending_resubscriptions:
+            self.pending_resubscriptions[broker_name] = set()
+        
+        # 기존 재구독 태스크가 있으면 취소
+        if broker_name in self.resubscription_tasks:
+            old_task = self.resubscription_tasks[broker_name]
+            if not old_task.done():
+                old_task.cancel()
+        
+        logger.debug(f"🔄 [{broker_name}] 재구독 상태 초기화")    
+
+    def _add_to_pending_resubscriptions(self, broker_name: str, symbols: set):
+        """재구독 대기 목록에 종목 추가"""
+        if not self.running:
+            logger.debug(f"🔄 [{broker_name}] 데몬 중지 중 - 재구독 대기 목록에 추가 건너뜀")
             return
-        session_manager = self.dbfi_session_managers[broker_market_key]
-        await session_manager.subscribe_symbols(symbols)
+        
+        if broker_name not in self.pending_resubscriptions:
+            self.pending_resubscriptions[broker_name] = set()
+        
+        # 새로운 종목들 추가
+        new_symbols = symbols - self.pending_resubscriptions[broker_name]
+        if new_symbols:
+            self.pending_resubscriptions[broker_name].update(new_symbols)
+            logger.info(f"🔄 [{broker_name}] 재구독 대기 목록에 추가: {list(new_symbols)}")
+            
+            # 재구독 태스크 시작
+            self._start_resubscription_task(broker_name)
+
+    def _remove_from_pending_resubscriptions(self, broker_name: str, symbols: set):
+        """재구독 대기 목록에서 종목 제거 (성공한 종목들)"""
+        if broker_name in self.pending_resubscriptions:
+            removed = symbols & self.pending_resubscriptions[broker_name]
+            if removed:
+                self.pending_resubscriptions[broker_name] -= removed
+                logger.debug(f"✅ [{broker_name}] 재구독 대기 목록에서 제거: {list(removed)}")
+    
+    def _start_resubscription_task(self, broker_name: str):
+        """재구독 태스크 시작 (이미 실행 중이면 스킵)"""
+        if not self.running:
+            logger.debug(f"🔄 [{broker_name}] 데몬 중지 중 - 재구독 대기 목록에 추가 건너뜀")
+            return
+        # 이미 실행 중인 태스크가 있으면 스킵
+        if (broker_name in self.resubscription_tasks and 
+            not self.resubscription_tasks[broker_name].done()):
+            logger.debug(f"🔄 [{broker_name}] 재구독 태스크 이미 실행 중")
+            return
+        
+        # 재구독할 종목이 있을 때만 태스크 시작
+        if (broker_name in self.pending_resubscriptions and 
+            self.pending_resubscriptions[broker_name]):
+            
+            pending_symbols = self.pending_resubscriptions[broker_name].copy()
+            task = asyncio.create_task(
+                self._resubscribe_missing_symbols(broker_name, pending_symbols)
+            )
+            self.resubscription_tasks[broker_name] = task
+            
+            logger.info(f"🔄 [{broker_name}] 재구독 태스크 시작: {list(pending_symbols)}")
+
+    def _cleanup_resubscription_task(self, broker_name: str):
+        """완료된 재구독 태스크 정리"""
+        if broker_name in self.resubscription_tasks:
+            task = self.resubscription_tasks[broker_name]
+            if task.done():
+                del self.resubscription_tasks[broker_name]
+                logger.debug(f"🔄 [{broker_name}] 재구독 태스크 정리됨")
+    
+    # async def run_dbfi_subscribe(self, broker_market_key: str, symbols: list):
+    #     """DBFI 세션 매니저를 통한 종목 구독"""
+    #     if broker_market_key not in self.dbfi_session_managers:
+    #         logger.error(f"{broker_market_key} DBFI 세션 매니저가 없습니다.")
+    #         return
+    #     session_manager = self.dbfi_session_managers[broker_market_key]
+    #     await session_manager.subscribe_symbols(symbols)

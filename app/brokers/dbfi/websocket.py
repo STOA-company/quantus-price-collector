@@ -153,7 +153,7 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
             try:
                 response = await asyncio.wait_for(
                     self.websocket.recv(), 
-                    timeout=3.0
+                    timeout=10.0
                 )
                 response_data = json.loads(response)
                 
@@ -165,6 +165,11 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
                 if rsp_cd == '00000':  # 정상처리
                     logger.debug(f"DBFI 구독 성공: {symbol} - {rsp_msg}")
                     return True
+                elif rsp_cd == '10017':
+                    logger.error(f"🚨 DBFI 구독 실패 - 종목코드를 찾을 수 없습니다: {symbol}")
+                    logger.error(f"   응답: {rsp_msg}")
+                    logger.error(f"   해결방안: 종목코드를 찾을 수 없습니다")
+                    return False
                 elif rsp_cd == '10011':  # 계좌별 허용 세션 수 초과
                     logger.error(f"🚨 DBFI 구독 실패 - 세션 수 초과: {symbol}")
                     logger.error(f"   응답: {rsp_msg}")
