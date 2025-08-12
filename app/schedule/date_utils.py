@@ -11,10 +11,6 @@ load_dotenv()
 KR_MARKET_START = os.getenv('KR_MARKET_START', '08:00')  # 한국 시장 시작 시간
 KR_MARKET_END = os.getenv('KR_MARKET_END', '18:00')  # 한국 시장 종료 시간
 
-# 환경변수 로딩 확인을 위한 로깅
-print(f"🕒 [설정] 한국 시장 시간 설정 확인:")
-print(f"   시작 시간: {KR_MARKET_START} (환경변수: {os.environ.get('KR_MARKET_START', '설정되지 않음')})")
-print(f"   종료 시간: {KR_MARKET_END} (환경변수: {os.environ.get('KR_MARKET_END', '설정되지 않음')})")
 US_MARKET_START = os.getenv('US_MARKET_START', '04:00')  # 미국 시장 시작 시간
 US_MARKET_END = os.getenv('US_MARKET_END', '20:00')  # 미국 시장 종료 시간
 

@@ -1,5 +1,6 @@
-# quantus-price-collector
-quantus-price-collector
-test
-test2
-blue-green test 
+# 
+## 1. 기능설명
+## 2. 요구사항분석
+## 3. 시스템아키텍쳐
+## 4. 워크플로우
+## 5. 예외처리

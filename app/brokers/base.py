@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional, AsyncGenerator, List
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-
+from app.utils.exceptions import BrokerConnectionError
 
 class MarketType(Enum):
     """시장 타입 열거형"""
@@ -89,7 +89,7 @@ class BrokerWebSocketClient(ABC):
         self.oauth: Optional[BrokerOAuth] = None
         
         # ping/pong 관련 설정
-        self.ping_interval = 5.0  # 5초마다 ping
+        self.ping_interval = 1.0  # 5초마다 ping
         self.ping_timeout = 10.0  # 10초 ping 타임아웃
         self._running = False
         self._ping_task = None
@@ -97,6 +97,10 @@ class BrokerWebSocketClient(ABC):
         self.last_pong_time = None
         self.ping_count = 0
         self.pong_count = 0
+        
+        # 🔥 연결 실패 감지를 위한 플래그 추가
+        self._connection_failed = False
+        self._connection_error = None
     
     @abstractmethod
     async def _connect_websocket(self):
@@ -120,13 +124,24 @@ class BrokerWebSocketClient(ABC):
                 self.logger.debug("이미 연결되어 있습니다")
                 return
             
-            # 액세스 토큰 발급
+            # 🔥 1단계: 기존 ping 루프 완전 정리
+            await self.stop_ping_loop()
+            
+            # 🔥 2단계: 연결 상태 플래그 완전 초기화
+            self._connection_failed = False
+            self._connection_error = None
+            self._running = False  # 기존 루프들 정지 신호
+            
+            # 🔥 3단계: 잠시 대기 (기존 태스크들이 정리될 시간)
+            await asyncio.sleep(0.1)
+            
+            # 🔥 4단계: 액세스 토큰 발급
             self.access_token = self._get_access_token()
             
-            # 웹소켓 연결
+            # 🔥 5단계: 웹소켓 연결
             await self._connect_websocket()
             
-            # ping 루프 시작
+            # 🔥 6단계: 새로운 ping 루프 시작
             self._running = True
             self._ping_task = asyncio.create_task(self._ping_loop())
             
@@ -180,7 +195,7 @@ class BrokerWebSocketClient(ABC):
     async def receive_data(self) -> AsyncGenerator[Dict[str, Any], None]:
         """데이터 수신 제너레이터 (공통 구현)"""
         try:
-            while self.is_connected():
+            while self.is_connected() and not self._connection_failed:
                 raw_message = await self._receive_message()
                 
                 if raw_message is None:
@@ -192,9 +207,23 @@ class BrokerWebSocketClient(ABC):
                         yield parsed_message
                 else:
                     yield raw_message
+            
+            # 🔥 루프 종료 후 연결 실패 확인
+            if self._connection_failed:
+                error_msg = str(self._connection_error) if self._connection_error else "연결 실패 감지됨"
+                raise BrokerConnectionError(f"ping 루프 연결 실패: {error_msg}")
                     
+        except BrokerConnectionError:
+            # 🔥 BrokerConnectionError는 그대로 전파
+            raise
         except Exception as e:
             self.logger.error(f"데이터 수신 실패: {e}")
+            # 🔥 ping 루프 연결 실패는 BrokerConnectionError로 변환
+            if self._connection_failed:
+                raise BrokerConnectionError(f"ping 루프 연결 실패: {self._connection_error}")
+            # 🔥 기타 예외도 BrokerConnectionError로 변환 (연결 관련 문제로 간주)
+            raise BrokerConnectionError(f"데이터 수신 실패: {e}")
+    
     
     async def test_connection(self) -> bool:
         """웹소켓 연결 테스트 (공통 구현)"""
@@ -254,9 +283,14 @@ class BrokerWebSocketClient(ABC):
                         self.logger.debug(f"ping 성공 - 응답시간: {response_time:.1f}ms, ping/pong 카운트: {self.ping_count}/{self.pong_count}")
                     else:
                         self.logger.warning(f"ping 실패 - ping 카운트: {self.ping_count}, pong 카운트: {self.pong_count}")
-                    
+                        raise BrokerConnectionError(f"ping 실패 - 응답 없음")
                     await asyncio.sleep(self.ping_interval)
-                    
+                except BrokerConnectionError as e:
+                    self.logger.error(f"ping 루프 중 연결 오류: {e}")
+                    # 🔥 연결 실패 플래그 설정
+                    self._connection_failed = True
+                    self._connection_error = e
+                    break  # ping 루프 종료
                 except Exception as e:
                     self.logger.error(f"ping 루프 중 오류: {e}")
                     await asyncio.sleep(self.ping_interval)
@@ -265,7 +299,10 @@ class BrokerWebSocketClient(ABC):
             self.logger.debug("ping 루프 취소됨")
         except Exception as e:
             self.logger.error(f"ping 루프 치명적 오류: {e}")
-    
+            # 🔥 예상치 못한 오류도 연결 실패로 처리
+            self._connection_failed = True
+            self._connection_error = e
+
     async def stop_ping_loop(self):
         """ping 루프 중지"""
         try:
