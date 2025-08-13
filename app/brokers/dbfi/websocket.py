@@ -10,6 +10,7 @@ from app.brokers.base import BrokerWebSocketClient, BrokerConfig, MarketType
 from app.brokers.dbfi.oauth import DBFIOAuth
 from app.brokers.dbfi.schemas import DBFIMessageBuilder, DBFIMessageParser, DBFIMarketType
 from app.utils.config import config
+from app.utils.exceptions import BrokerConnectionError
 
 
 logger = logging.getLogger(__name__)
@@ -73,8 +74,8 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
             # 웹소켓 연결
             self.websocket = await websockets.connect(
                 ws_url,
-                ping_interval=5,
-                ping_timeout=15,
+                ping_interval=1,
+                ping_timeout=10,
             )
             
             # 연결 후 서버 초기 응답 대기 (최대 3초)
@@ -153,7 +154,7 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
             try:
                 response = await asyncio.wait_for(
                     self.websocket.recv(), 
-                    timeout=3.0
+                    timeout=10.0
                 )
                 response_data = json.loads(response)
                 
@@ -165,6 +166,11 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
                 if rsp_cd == '00000':  # 정상처리
                     logger.debug(f"DBFI 구독 성공: {symbol} - {rsp_msg}")
                     return True
+                elif rsp_cd == '10017':
+                    logger.error(f"🚨 DBFI 구독 실패 - 종목코드를 찾을 수 없습니다: {symbol}")
+                    logger.error(f"   응답: {rsp_msg}")
+                    logger.error(f"   해결방안: 종목코드를 찾을 수 없습니다")
+                    return False
                 elif rsp_cd == '10011':  # 계좌별 허용 세션 수 초과
                     logger.error(f"🚨 DBFI 구독 실패 - 세션 수 초과: {symbol}")
                     logger.error(f"   응답: {rsp_msg}")
@@ -248,16 +254,19 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
             # JSON 파싱
             data = json.loads(message)
             
-            # 전체 메시지 로깅 (개발/디버깅용)
-            # logger.debug(f"DBFI 원본 메시지: {message}")
-            # logger.debug(f"DBFI 파싱된 데이터: {json.dumps(data, ensure_ascii=False, indent=2)}")
-            
             return data
             
         except websockets.exceptions.ConnectionClosed:
-            logger.warning("DBFI 웹소켓 연결이 종료되었습니다")
-            self.websocket = None  # 연결 종료 시 websocket 객체 정리
-            return None
+            if self.is_shutting_down:  # ← base.py에서 제공하는 플래그 사용
+                # 정상 종료 시
+                logger.debug("DBFI 웹소켓 정상 종료됨")
+                self.websocket = None
+                return None
+            else:
+                # 비정상 종료 시
+                logger.warning("DBFI 웹소켓 연결이 비정상으로 종료되었습니다")
+                self.websocket = None
+                raise BrokerConnectionError("웹소켓 연결이 비정상으로 종료되었습니다")
         except json.JSONDecodeError as e:
             logger.error(f"DBFI 메시지 JSON 파싱 실패: {e}")
             return None
@@ -284,6 +293,7 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
     def is_connected(self) -> bool:
         """연결 상태 확인 (websockets 호환성 개선)"""
         if self.websocket is None:
+            logger.debug("웹소켓 연결 상태 확인: 연결되지 않음")
             return False
         
         # websockets 11.x 이상에서는 closed 속성 사용
@@ -301,23 +311,54 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
         """브로커 이름 반환"""
         return "dbfi"
     
+    # async def _send_ping(self) -> bool:
+    #     """ping 전송 구현 (websockets 라이브러리 사용)"""
+    #     try:
+    #         if not self.is_connected():
+    #             return False
+    #         # 기존 ping 로직
+    #         pong_waiter = await self.websocket.ping()
+    #         await asyncio.wait_for(pong_waiter, timeout=self.ping_timeout)
+    #         return True
+            
+    #     except asyncio.TimeoutError:
+    #         logger.warning("DBFI ping 타임아웃 - pong 응답 없음")
+    #         return False
+    #     except Exception as e:
+    #         logger.error(f"DBFI ping 전송 실패: {e}")
+    #         return False
+
     async def _send_ping(self) -> bool:
-        """ping 전송 구현 (websockets 라이브러리 사용)"""
         try:
             if not self.is_connected():
                 return False
             
-            # websockets 라이브러리의 ping 메서드 사용
+            # # 🔍 테스트: 30초 후 연결 종료
+            # if not hasattr(self, '_test_done'):
+            #     self._test_done = False
+            #     logger.info(" 테스트 플래그 초기화")
+            
+            # if not self._test_done:
+            #     current_time = asyncio.get_event_loop().time()
+            #     if not hasattr(self, '_start_time'):
+            #         self._start_time = current_time
+            #         logger.info(f" 테스트 시작 시간 설정: {self._start_time}")
+                
+            #     elapsed = current_time - self._start_time
+            #     logger.debug(f" 테스트 경과 시간: {elapsed:.1f}초")
+                
+            #     if elapsed > 30:
+            #         logger.info(" 테스트: 30초 경과로 연결 강제 종료")
+            #         await self.disconnect()
+            #         self._test_done = True
+                    
+            #         raise BrokerConnectionError("테스트용 연결 종료")
+            
+            # 기존 ping 로직
             pong_waiter = await self.websocket.ping()
-            
-            # pong 응답 대기 (ping_timeout 사용)
             await asyncio.wait_for(pong_waiter, timeout=self.ping_timeout)
-            
             return True
             
-        except asyncio.TimeoutError:
-            logger.warning("DBFI ping 타임아웃 - pong 응답 없음")
-            return False
         except Exception as e:
             logger.error(f"DBFI ping 전송 실패: {e}")
             return False

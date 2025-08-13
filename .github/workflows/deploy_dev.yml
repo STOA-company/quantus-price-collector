@@ -15,7 +15,7 @@ on:
       - 'README.md'
 
     branches:
-      - 'main'
+      - 'dev'
 jobs:
   makeTagAndRelease:
     runs-on: ubuntu-latest
@@ -60,7 +60,7 @@ jobs:
           OWNER: "${{ github.repository_owner }}"
       - name: .env 파일 생성
         env:
-          ENV_CONTENT: ${{ secrets.ENV }}
+          ENV_CONTENT: ${{ secrets.ENV_DEV }}
         run: |
           echo "$ENV_CONTENT" > .env
       - name: 빌드 앤 푸시
@@ -78,7 +78,7 @@ jobs:
       - name: SSH to Azure server
         uses: appleboy/ssh-action@master
         with:
-          host: ${{ secrets.AZURE_HOST }}
+          host: ${{ secrets.AZURE_HOST_DEV }}
           username: ${{ secrets.AZURE_USERNAME }}
           key: ${{ secrets.AZURE_SSH_PRIVATE_KEY }}
           script: |

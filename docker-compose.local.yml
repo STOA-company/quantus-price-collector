@@ -105,84 +105,33 @@ services:
       redis-slave:
         condition: service_healthy
     restart: unless-stopped
-  # Nginx 로드밸런서
-  nginx:
-    image: nginx:alpine
-    container_name: pricecollector-nginx
+
+  # 메인 애플리케이션 (로컬 개발용)
+  pricecollector:
+    build: .
+    container_name: pricecollector-local2
     restart: unless-stopped
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-sentinel-1:
+        condition: service_started
+      redis-sentinel-2:
+        condition: service_started
+      redis-sentinel-3:
+        condition: service_started
     ports:
-      - "80:80"
-      - "443:443"
+      - "8000:8000"
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./logs/nginx:/var/log/nginx
+      - .:/app
+      - ./logs:/app/logs
     networks:
       - pricecollector-network
     healthcheck:
-      test: ["CMD", "nginx", "-t"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-
-  # Blue 인스턴스
-  pricecollector-blue:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER}/quantus-price-collector:${IMAGE_TAG:-latest}
-    container_name: pricecollector-blue
-    restart: unless-stopped
-    depends_on:
-      redis-master:
-        condition: service_healthy
-      redis-sentinel-1:
-        condition: service_started
-      redis-sentinel-2:
-        condition: service_started
-      redis-sentinel-3:
-        condition: service_started
-    environment:
-      - REDIS_SENTINELS=redis-sentinel-1:26379,redis-sentinel-2:26380,redis-sentinel-3:26381
-      - REDIS_MASTER_NAME=mymaster
-      - INSTANCE_NAME=blue
-      - PORT=8000
-    volumes:
-      - ./logs/blue:/app/logs
-    networks:
-      - pricecollector-network
-    healthcheck:
-      test: ["CMD", "true"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # Green 인스턴스 (배포시에만 활성화)
-  pricecollector-green:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER}/quantus-price-collector:${IMAGE_TAG:-latest}
-    container_name: pricecollector-green
-    restart: unless-stopped
-    depends_on:
-      redis-master:
-        condition: service_healthy
-      redis-sentinel-1:
-        condition: service_started
-      redis-sentinel-2:
-        condition: service_started
-      redis-sentinel-3:
-        condition: service_started
-    environment:
-      - REDIS_SENTINELS=redis-sentinel-1:26379,redis-sentinel-2:26380,redis-sentinel-3:26381
-      - REDIS_MASTER_NAME=mymaster
-      - INSTANCE_NAME=green
-      - PORT=8001
-    volumes:
-      - ./logs/green:/app/logs
-    networks:
-      - pricecollector-network
-    healthcheck:
-      test: ["CMD", "true"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    profiles:
-      - green  # 기본적으로는 실행되지 않음
 
 volumes:
   redis-master-data:
