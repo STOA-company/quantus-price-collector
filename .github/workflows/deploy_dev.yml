@@ -85,12 +85,12 @@ jobs:
             sudo mkdir -p /dockerProjects/quantus-price-collector
             
             # 설정 파일들 다운로드
-            sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/docker-compose.yml https://raw.githubusercontent.com/${{ github.repository }}/main/docker-compose.yml
-            sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/deploy.sh https://raw.githubusercontent.com/${{ github.repository }}/main/deploy.sh
-            sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/nginx.conf https://raw.githubusercontent.com/${{ github.repository }}/main/nginx.conf
-            sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/redis.conf https://raw.githubusercontent.com/${{ github.repository }}/main/redis-master.conf
-            sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/redis-slave.conf https://raw.githubusercontent.com/${{ github.repository }}/main/redis-slave.conf
-            sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/sentinel.conf https://raw.githubusercontent.com/${{ github.repository }}/main/sentinel.conf
+            sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/docker-compose.yml https://raw.githubusercontent.com/${{ github.repository }}/dev/docker-compose.yml
+            sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/deploy.sh https://raw.githubusercontent.com/${{ github.repository }}/dev/deploy.sh
+            sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/nginx.conf https://raw.githubusercontent.com/${{ github.repository }}/dev/nginx.conf
+            sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/redis.conf https://raw.githubusercontent.com/${{ github.repository }}/dev/redis-master.conf
+            sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/redis-slave.conf https://raw.githubusercontent.com/${{ github.repository }}/dev/redis-slave.conf
+            sudo curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o /dockerProjects/quantus-price-collector/sentinel.conf https://raw.githubusercontent.com/${{ github.repository }}/dev/sentinel.conf
 
             # 실행 권한 부여
             sudo chmod +x /dockerProjects/quantus-price-collector/deploy.sh
