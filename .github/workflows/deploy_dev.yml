@@ -60,7 +60,7 @@ jobs:
           OWNER: "${{ github.repository_owner }}"
       - name: .env 파일 생성
         env:
-          ENV_CONTENT: ${{ secrets.ENV }}
+          ENV_CONTENT: ${{ secrets.ENV_DEV }}
         run: |
           echo "$ENV_CONTENT" > .env
       - name: 빌드 앤 푸시
