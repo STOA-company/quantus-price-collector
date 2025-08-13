@@ -12,12 +12,18 @@ class RedisConfig(BaseSettings):
         extra="ignore",
     )
     
+    # 기존 Redis 설정
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
     redis_password: Optional[str] = None
     redis_ssl: bool = False
     redis_ssl_cert_reqs: Optional[str] = None
+    
+    # Redis Sentinel 설정
+    redis_sentinel_enabled: bool = Field(default=True, alias="REDIS_SENTINEL_ENABLED")
+    redis_sentinel_hosts: str = Field(default="redis-sentinel-1:26379,redis-sentinel-2:26380,redis-sentinel-3:26381", alias="REDIS_SENTINELS")
+    redis_master_name: str = Field(default="mymaster", alias="REDIS_MASTER_NAME")
     
     # 연결 풀 설정
     redis_max_connections: int = 10
@@ -108,7 +114,6 @@ class BrokerConfig(BaseSettings):
     watch_symbols_foreign: List[str] = Field(default=[], alias="WATCH_SYMBOLS_FOREIGN")
     enabled_brokers: List[str] = Field(default=[], alias="ENABLED_BROKERS")
 
-
 class AppConfig(BaseSettings):
     """애플리케이션 전체 설정"""
     model_config = SettingsConfigDict(
@@ -129,7 +134,6 @@ class AppConfig(BaseSettings):
 
     # broker 설정
     broker: BrokerConfig = BrokerConfig()
-
 
 # 전역 설정 인스턴스
 config = AppConfig()

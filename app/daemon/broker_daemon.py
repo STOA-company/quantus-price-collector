@@ -7,7 +7,14 @@ from app.services.redis_service import RedisService
 from app.brokers.factory import broker_factory_manager
 from app.brokers.base import BrokerWebSocketClient, MarketType, BrokerConfig
 from app.utils.config import config
-from app.utils.exceptions import BrokerConnectionError, CircuitBreakerError
+from app.utils.exceptions import (
+    BrokerConnectionError, 
+    CircuitBreakerError, 
+    BrokerInitializationError,
+    BrokerReconnectionError,
+    ResubscriptionFailedError
+)
+from app.utils.exceptions import BrokerDaemonStatusNotification
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +65,9 @@ class BrokerDaemon:
             'last_update': None
         }
         
+        # 시작 시간 기록 (가동시간 계산용)
+        self.start_time = None
+        
         # 시장별 설정 로드
         if self.market_type == MarketType.DOMESTIC:
             self.dbfi_config = config.dbfi.get_config_for_market(MarketType.DOMESTIC)
@@ -70,7 +80,19 @@ class BrokerDaemon:
 
     async def start(self, active_markets_info=None):
         """데몬 시작"""
+        self.start_time = datetime.now()
         logger.info(f"🚀 Broker Daemon 시작 ({self.market_type.value})")
+        
+        # Slack 알림: 데몬 시작
+        try:
+            BrokerDaemonStatusNotification.send_startup_notification(
+                market_type=self.market_type.value,
+                broker_count=0,  # 아직 초기화 전
+                symbol_count=len(self.watch_symbols)
+            )
+        except Exception as e:
+            logger.warning(f"Slack 시작 알림 전송 실패: {e}")
+        
         self.running = True
         
         try:
@@ -105,7 +127,13 @@ class BrokerDaemon:
         logger.info("🛑 Broker Daemon 정지 시작...")
         
         try:
+            self.running = False
             # 1. 브로커 연결 해제
+            for broker_name, broker in self.brokers.items():
+                # if hasattr(broker, 'set_shutdown_mode'):
+                broker.set_shutdown_mode(True)  # ← 정상 종료 모드 설정
+                logger.debug(f"{broker_name} 정상 종료 모드 설정")
+
             for broker_name, broker in self.brokers.items():
                 try:
                     if broker.is_connected():
@@ -131,11 +159,36 @@ class BrokerDaemon:
             if self.redis_service:
                 self.redis_service.disconnect()
             
+            # Slack 알림: 데몬 종료
+            try:
+                uptime = self._calculate_uptime()
+                BrokerDaemonStatusNotification.send_shutdown_notification(
+                    market_type=self.market_type.value,
+                    uptime=uptime,
+                    total_messages=self.stats['total_messages']
+                )
+            except Exception as e:
+                logger.warning(f"Slack 종료 알림 전송 실패: {e}")
+            
             logger.info("✅ Broker Daemon 정상 종료")
             
         except Exception as e:
             logger.error(f"💥 Broker Daemon 종료 중 오류: {e}")
             self.running = False
+
+    def _calculate_uptime(self) -> str:
+        """가동시간 계산"""
+        if not self.start_time:
+            return "알 수 없음"
+        
+        uptime = datetime.now() - self.start_time
+        hours = uptime.seconds // 3600
+        minutes = (uptime.seconds % 3600) // 60
+        
+        if hours > 0:
+            return f"{hours}시간 {minutes}분"
+        else:
+            return f"{minutes}분"
 
     async def _initialize_brokers(self):
         """브로커 초기화"""
@@ -180,15 +233,53 @@ class BrokerDaemon:
                             }
                             
                             logger.info(f"✅ {broker_key} 브로커 초기화 완료")
+                            
+                            # Slack 알림: 브로커 초기화 성공
+                            try:
+                                BrokerDaemonStatusNotification.send_broker_initialization_success(
+                                    broker_name=broker_key,
+                                    market_type=self.market_type.value,
+                                    session_count=session_count
+                                )
+                            except Exception as e:
+                                logger.warning(f"Slack 브로커 초기화 성공 알림 전송 실패: {e}")
                         else:
                             logger.error(f"❌ {broker_key} 브로커 생성 실패")
                             
+                            # Slack 알림: 브로커 초기화 실패
+                            try:
+                                raise BrokerInitializationError(
+                                    message=f"{broker_key} 브로커 생성 실패",
+                                    broker_name=broker_key,
+                                    market_type=self.market_type.value,
+                                    error_details="브로커 팩토리에서 None 반환"
+                                )
+                            except BrokerInitializationError as e:
+                                logger.error(f"❌ {e}")
+                            
                 except Exception as e:
                     logger.error(f"❌ {broker_name} 브로커 초기화 실패: {e}")
+                    
+                    # Slack 알림: 브로커 초기화 실패
+                    try:
+                        raise BrokerInitializationError(
+                            message=f"{broker_name} 브로커 초기화 실패",
+                            broker_name=broker_name,
+                            market_type=self.market_type.value,
+                            error_details=str(e)
+                        )
+                    except BrokerInitializationError as e:
+                        logger.error(f"❌ {e}")
+                    
                     continue
             
             if not self.brokers:
-                raise BrokerConnectionError(f"사용 가능한 {self.market_type.value} 브로커가 없습니다")
+                raise BrokerInitializationError(
+                    message=f"사용 가능한 {self.market_type.value} 브로커가 없습니다",
+                    broker_name="",
+                    market_type=self.market_type.value,
+                    error_details="모든 브로커 초기화 실패"
+                )
                 
         except Exception as e:
             logger.error(f"❌ 브로커 초기화 실패: {e}")
@@ -224,9 +315,22 @@ class BrokerDaemon:
             try:
                 # 서킷브레이커 상태 확인
                 circuit_breaker = self.circuit_breakers.get(broker_name, {})
+
+                if circuit_breaker.get('state') == 'DISABLED':
+                    logger.info(f"🔒 {broker_name} 의도적 종료 - 브로커 루프 종료")
+                    break
                 
                 if circuit_breaker.get('state') == 'OPEN':
                     logger.warning(f"🚨 {broker_name} 서킷브레이커 OPEN - REST API 폴백 실행")
+                    # Slack 알림: 서킷브레이커 OPEN
+                    try:
+                        BrokerDaemonStatusNotification.send_circuit_breaker_open_notification(
+                            broker_name=broker_name,
+                            failure_count=circuit_breaker.get('failure_count', 0),
+                            last_failure_time=circuit_breaker.get('last_failure_time')
+                        )
+                    except Exception as e:
+                        logger.warning(f"Slack 서킷브레이커 OPEN 알림 전송 실패: {e}")
                     
                     # REST API를 백그라운드 태스크로 실행 (무한 루프 방지)
                     if broker_name not in self.rest_api_tasks or self.rest_api_tasks[broker_name].done():
@@ -238,11 +342,30 @@ class BrokerDaemon:
                     await asyncio.sleep(self.circuit_breaker_config['recovery_timeout'])
                     circuit_breaker['state'] = 'HALF_OPEN'
                     logger.info(f"🔄 {broker_name} 서킷브레이커 HALF_OPEN - 복구 시도")
+                    
+                    # Slack 알림: 서킷브레이커 HALF_OPEN
+                    try:
+                        BrokerDaemonStatusNotification.send_circuit_breaker_half_open_notification(
+                            broker_name=broker_name
+                        )
+                    except Exception as e:
+                        logger.warning(f"Slack 서킷브레이커 HALF_OPEN 알림 전송 실패: {e}")
+                    
                     continue
                 
                 # HALF_OPEN 상태에서 연결 시도
                 if circuit_breaker.get('state') == 'HALF_OPEN':
                     logger.info(f"🔌 {broker_name} HALF_OPEN 상태 - 웹소켓 재연결 시도")
+                    
+                    # Slack 알림: 웹소켓 재연결 시도
+                    try:
+                        BrokerDaemonStatusNotification.send_websocket_reconnection_attempt_notification(
+                            broker_name=broker_name,
+                            attempt_type="HALF_OPEN 복구"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Slack 웹소켓 재연결 시도 알림 전송 실패: {e}")
+                    
                     await broker.connect()
                     
                     # Ping으로 연결 상태 확인
@@ -252,6 +375,15 @@ class BrokerDaemon:
                         circuit_breaker['state'] = 'CLOSED'
                         circuit_breaker['failure_count'] = 0
                         circuit_breaker['last_success_time'] = datetime.now()
+                        
+                        # Slack 알림: 서킷브레이커 CLOSED (복구 성공)
+                        try:
+                            BrokerDaemonStatusNotification.send_circuit_breaker_closed_notification(
+                                broker_name=broker_name,
+                                recovery_type="HALF_OPEN 복구"
+                            )
+                        except Exception as e:
+                            logger.warning(f"Slack 서킷브레이커 CLOSED 알림 전송 실패: {e}")
                         
                         # REST API 태스크 취소
                         if hasattr(self, 'rest_api_tasks') and broker_name in self.rest_api_tasks:
@@ -274,6 +406,16 @@ class BrokerDaemon:
                         # 연결 후 Ping으로 실제 연결 상태 확인
                         if not await broker._send_ping():
                             logger.error(f"❌ {broker_name} 연결 후 Ping 실패")
+                            
+                            # Slack 알림: 웹소켓 연결 실패
+                            try:
+                                BrokerDaemonStatusNotification.send_websocket_connection_failed_notification(
+                                    broker_name=broker_name,
+                                    failure_reason="Ping 실패"
+                                )
+                            except Exception as e:
+                                logger.warning(f"Slack 웹소켓 연결 실패 알림 전송 실패: {e}")
+                            
                             raise CircuitBreakerError(
                                 message="연결 후 Ping 실패",
                                 broker_name=broker_name,
@@ -281,6 +423,14 @@ class BrokerDaemon:
                             )
                         
                         logger.info(f"✅ {broker_name} 연결 및 Ping 성공")
+                        
+                        # Slack 알림: 웹소켓 연결 성공
+                        try:
+                            BrokerDaemonStatusNotification.send_websocket_connection_success_notification(
+                                broker_name=broker_name
+                            )
+                        except Exception as e:
+                            logger.warning(f"Slack 웹소켓 연결 성공 알림 전송 실패: {e}")
                 
                 # 재연결 성공 시 상태 초기화
                 reconnect_count = 0
@@ -353,6 +503,16 @@ class BrokerDaemon:
                     circuit_breaker['state'] = 'OPEN'
                     logger.warning(f"🚨 {broker_name} 서킷브레이커 OPEN - {circuit_breaker['failure_count']}회 연속 실패")
                     
+                    # Slack 알림: 서킷브레이커 OPEN (임계값 도달)
+                    try:
+                        BrokerDaemonStatusNotification.send_circuit_breaker_open_notification(
+                            broker_name=broker_name,
+                            failure_count=circuit_breaker['failure_count'],
+                            last_failure_time=circuit_breaker['last_failure_time']
+                        )
+                    except Exception as e:
+                        logger.warning(f"Slack 서킷브레이커 OPEN 알림 전송 실패: {e}")
+                    
                     # REST API 폴백 시작
                     # try:
                     #     await self._execute_rest_api_fallback(broker_name)
@@ -365,6 +525,19 @@ class BrokerDaemon:
                 
                 if reconnect_count >= self.max_reconnect_attempts:
                     logger.error(f"🚨 {broker_name} 최대 재연결 시도 초과, 브로커 비활성화")
+                    
+                    # Slack 알림: 브로커 재연결 실패
+                    try:
+                        raise BrokerReconnectionError(
+                            message=f"{broker_name} 최대 재연결 시도 초과",
+                            broker_name=broker_name,
+                            attempt_count=reconnect_count,
+                            max_attempts=self.max_reconnect_attempts,
+                            error_details=str(e)
+                        )
+                    except BrokerReconnectionError as e:
+                        logger.error(f"❌ {e}")
+                    
                     break
                 
                 # 재연결 전 종목 백업
@@ -391,7 +564,17 @@ class BrokerDaemon:
                 if all_requested_symbols:
                     self._add_to_pending_resubscriptions(broker_name, all_requested_symbols)
                     logger.info(f"🔄 {broker_name} 재연결로 인한 {len(all_requested_symbols)}개 종목 재구독 대기")
-            
+                
+                # Slack 알림: 브로커 재연결 성공
+                try:
+                    BrokerDaemonStatusNotification.send_broker_reconnection_success(
+                        broker_name=broker_name,
+                        attempt_count=reconnect_count,
+                        wait_time=wait_time
+                    )
+                except Exception as e:
+                    logger.warning(f"Slack 재연결 성공 알림 전송 실패: {e}")
+
             except Exception as e:
                 logger.error(f"💥 {broker_name} 예상치 못한 오류: {e}")
                 self.stats['error_count'] += 1
@@ -688,6 +871,16 @@ class BrokerDaemon:
             if remaining:
                 if retry_count >= max_retries:
                     logger.error(f"🚨 {broker_name} 최대 재시도 도달 - 실패 종목: {list(remaining)}")
+                    try:
+                        raise ResubscriptionFailedError(
+                            message=f"{broker_name} 최대 재시도 도달 - 실패 종목: {list(remaining)}",
+                            broker_name=broker_name,
+                            failed_symbols=list(remaining),
+                            max_retries=max_retries,
+                            error_details=f"최대 재시도 횟수({max_retries}회) 도달"
+                        )
+                    except ResubscriptionFailedError as e:
+                        logger.error(f"❌ {e}")
                 else:
                     logger.warning(f"⚠️ {broker_name} 재구독 중단됨 - 실패 종목: {list(remaining)}")
 

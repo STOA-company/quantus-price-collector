@@ -31,14 +31,13 @@ class DBFIRestAPI:
             logger.warning("Redis 연결 실패 - 데이터 발행 불가")
 
         # 토큰별 요청 제한 초기화 (더 보수적으로 설정)
-        logger.debug(f"🔍 토큰 제한 초기화 시작: access_token={bool(self.access_token)}")
         if self.access_token and self.access_token not in self._token_rate_limits:
             self._token_rate_limits[self.access_token] = {
                 'request_count': 0,
                 'last_request_time': time.time(),
                 'rate_limit': 4  # 1초당 4개로 줄임 (더 보수적)
             }
-            logger.info(f"✅ API 제한 설정 완료: 1초당 {self._token_rate_limits[self.access_token]['rate_limit']}개 요청")
+            logger.debug(f"✅ API 제한 설정 완료: 1초당 {self._token_rate_limits[self.access_token]['rate_limit']}개 요청")
             logger.debug(f"🔍 초기화된 제한 정보: {self._token_rate_limits}")
         else:
             logger.warning(f"⚠️ 토큰 제한 초기화 실패: access_token={bool(self.access_token)}, already_exists={self.access_token in self._token_rate_limits if self.access_token else False}")

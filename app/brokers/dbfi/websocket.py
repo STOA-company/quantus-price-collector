@@ -257,9 +257,16 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
             return data
             
         except websockets.exceptions.ConnectionClosed:
-            logger.warning("DBFI 웹소켓 연결이 종료되었습니다")
-            self.websocket = None  # 연결 종료 시 websocket 객체 정리
-            raise BrokerConnectionError("웹소켓 연결이 종료되었습니다")
+            if self.is_shutting_down:  # ← base.py에서 제공하는 플래그 사용
+                # 정상 종료 시
+                logger.debug("DBFI 웹소켓 정상 종료됨")
+                self.websocket = None
+                return None
+            else:
+                # 비정상 종료 시
+                logger.warning("DBFI 웹소켓 연결이 비정상으로 종료되었습니다")
+                self.websocket = None
+                raise BrokerConnectionError("웹소켓 연결이 비정상으로 종료되었습니다")
         except json.JSONDecodeError as e:
             logger.error(f"DBFI 메시지 JSON 파싱 실패: {e}")
             return None

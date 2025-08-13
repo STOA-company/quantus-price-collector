@@ -101,6 +101,13 @@ class BrokerWebSocketClient(ABC):
         # 🔥 연결 실패 감지를 위한 플래그 추가
         self._connection_failed = False
         self._connection_error = None
+
+        self.is_shutting_down = False
+
+    def set_shutdown_mode(self, shutdown: bool):
+        """정상 종료 모드 설정"""
+        self.is_shutting_down = shutdown
+        self.logger.debug(f"브로커 정상 종료 모드: {shutdown}")
     
     @abstractmethod
     async def _connect_websocket(self):

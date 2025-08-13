@@ -8,11 +8,15 @@ from typing import Literal
 
 load_dotenv()
 # 시장 운영시간 환경변수 설정
+KR_MARKET_PRE = os.getenv('KR_MARKET_PRE', '07:30')    # 한국 시장 장시작전
 KR_MARKET_START = os.getenv('KR_MARKET_START', '08:00')  # 한국 시장 시작 시간
-KR_MARKET_END = os.getenv('KR_MARKET_END', '18:00')  # 한국 시장 종료 시간
+KR_MARKET_END = os.getenv('KR_MARKET_END', '18:00')    # 한국 시장 종료 시간
+KR_MARKET_AFTER = os.getenv('KR_MARKET_AFTER', '18:30') # 한국 시장 장마감후
 
+US_MARKET_PRE = os.getenv('US_MARKET_PRE', '03:30')    # 미국 시장 장시작전
 US_MARKET_START = os.getenv('US_MARKET_START', '04:00')  # 미국 시장 시작 시간
-US_MARKET_END = os.getenv('US_MARKET_END', '20:00')  # 미국 시장 종료 시간
+US_MARKET_END = os.getenv('US_MARKET_END', '20:00')    # 미국 시장 종료 시간
+US_MARKET_AFTER = os.getenv('US_MARKET_AFTER', '20:30') # 미국 시장 장마감후
 
 # 타임존 설정 (quantus_backend 의존성 제거)
 korea_tz = pytz.timezone('Asia/Seoul')
@@ -20,8 +24,8 @@ utc_tz = pytz.timezone('UTC')
 us_eastern_tz = pytz.timezone('US/Eastern')  # 서머타임 자동 처리
 
 # 임시 휴일 설정 (필요시 환경변수에서 로드 가능)
-TEMPORARY_HOLIDAYS_KR = []
-TEMPORARY_HOLIDAYS_US = []
+TEMPORARY_HOLIDAYS_KR = os.getenv('TEMPORARY_HOLIDAYS_KR', '[]')
+TEMPORARY_HOLIDAYS_US = os.getenv('TEMPORARY_HOLIDAYS_US', '[]')
 
 # 로거 설정
 logger = logging.getLogger(__name__)
@@ -209,37 +213,55 @@ def is_market_open(country: Literal["KR", "US"] = "KR", market_hours=None) -> di
     
     if country == "KR":
         # 환경변수에서 시장 시간 가져오기
+        pre_time = KR_MARKET_PRE.split(':')
         start_time = KR_MARKET_START.split(':')
         end_time = KR_MARKET_END.split(':')
+        after_time = KR_MARKET_AFTER.split(':')
+        
+        market_pre_hour = int(pre_time[0])
+        market_pre_minute = int(pre_time[1])
         market_open_hour = int(start_time[0])
         market_open_minute = int(start_time[1])
         market_close_hour = int(end_time[0])
         market_close_minute = int(end_time[1])
+        market_after_hour = int(after_time[0])
+        market_after_minute = int(after_time[1])
         
         # 현재 시간을 분 단위로 변환
         current_minutes = now.hour * 60 + now.minute
+        pre_minutes = market_pre_hour * 60 + market_pre_minute
         open_minutes = market_open_hour * 60 + market_open_minute
         close_minutes = market_close_hour * 60 + market_close_minute
+        after_minutes = market_after_hour * 60 + market_after_minute
         
         is_trading_hours = open_minutes <= current_minutes < close_minutes
-        is_pre_market = False  # 한국 시장도 pre/after market 구분 없이 운영
-        is_after_market = False
+        is_pre_market = pre_minutes <= current_minutes < open_minutes
+        is_after_market = close_minutes <= current_minutes < after_minutes
     elif country == "US":
         # 환경변수에서 시장 시간 가져오기
+        pre_time = US_MARKET_PRE.split(':')
         start_time = US_MARKET_START.split(':')
         end_time = US_MARKET_END.split(':')
+        after_time = US_MARKET_AFTER.split(':')
+        
+        market_pre_hour = int(pre_time[0])
+        market_pre_minute = int(pre_time[1])
         market_open_hour = int(start_time[0])
         market_open_minute = int(start_time[1])
         market_close_hour = int(end_time[0])
         market_close_minute = int(end_time[1])
+        market_after_hour = int(after_time[0])
+        market_after_minute = int(after_time[1])
         
         current_time_minutes = now.hour * 60 + now.minute
+        pre_time_minutes = market_pre_hour * 60 + market_pre_minute
         open_time_minutes = market_open_hour * 60 + market_open_minute
         close_time_minutes = market_close_hour * 60 + market_close_minute
+        after_time_minutes = market_after_hour * 60 + market_after_minute
         
         is_trading_hours = open_time_minutes <= current_time_minutes < close_time_minutes
-        is_pre_market = False  # 미국 시장은 pre/after market 구분 없이 운영
-        is_after_market = False
+        is_pre_market = pre_time_minutes <= current_time_minutes < open_time_minutes
+        is_after_market = close_time_minutes <= current_time_minutes < after_time_minutes
     else:
         is_trading_hours = False
         is_pre_market = False
@@ -290,11 +312,13 @@ def get_next_market_open_time(country: Literal["KR", "US"] = "KR") -> datetime:
         now = now_utc()
     
     if country == "KR":
-        market_open_hour = 9
-        market_open_minute = 0
+        start_time = KR_MARKET_START.split(':')
+        market_open_hour = int(start_time[0])
+        market_open_minute = int(start_time[1])
     else:
-        market_open_hour = 9
-        market_open_minute = 30
+        start_time = US_MARKET_START.split(':')
+        market_open_hour = int(start_time[0])
+        market_open_minute = int(start_time[1])
     
     # 오늘 장 시작 시간
     today_market_open = now.replace(hour=market_open_hour, minute=market_open_minute, second=0, microsecond=0)
