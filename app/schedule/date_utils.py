@@ -259,7 +259,7 @@ def is_market_open(country: Literal["KR", "US"] = "KR", market_hours=None) -> di
         close_time_minutes = market_close_hour * 60 + market_close_minute
         after_time_minutes = market_after_hour * 60 + market_after_minute
         
-        is_trading_hours = open_time_minutes <= current_time_minutes < close_time_minutes
+        is_trading_hours = open_time_minutes <= current_time_minutes <= close_time_minutes
         is_pre_market = pre_time_minutes <= current_time_minutes < open_time_minutes
         is_after_market = close_time_minutes <= current_time_minutes < after_time_minutes
     else:
