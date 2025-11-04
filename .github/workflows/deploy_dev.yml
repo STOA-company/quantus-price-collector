@@ -17,6 +17,35 @@ on:
     branches:
       - 'dev'
 jobs:
+  notify-start:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify deployment start - ${{ github.repository }}-${{ github.ref_name }}
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: ":rocket: Notify deployment start - ${{ github.repository }}-${{ github.ref_name }}",
+              attachments: [{
+                color: "warning",
+                fields: [{
+                  title: "환경",
+                  value: "${{ github.event.inputs.environment || 'production' }}",
+                  short: true
+                }, {
+                  title: "브랜치",
+                  value: "${{ github.ref_name }}",
+                  short: true
+                }, {
+                  title: "시작자",
+                  value: "${{ github.actor }}",
+                  short: true
+                }]
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL_DEPLOY }}
   makeTagAndRelease:
     runs-on: ubuntu-latest
     outputs:
@@ -101,3 +130,70 @@ jobs:
             # 블루-그린 배포 실행
             cd /dockerProjects/quantus-price-collector
             sudo GITHUB_REPOSITORY_OWNER=${OWNER_LC} IMAGE_TAG=${{ needs.makeTagAndRelease.outputs.tag_name }} ./deploy.sh ${{ needs.makeTagAndRelease.outputs.tag_name }}
+  notify-success:
+    runs-on: ubuntu-latest
+    needs: [ makeTagAndRelease, deploy ]
+    if: success()
+    steps:
+      - name: Notify deployment success
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: ":white_check_mark: Deployment success - ${{ github.repository }}-${{ github.ref_name }}",
+              attachments: [{
+                color: "good",
+                fields: [{
+                  title: "환경",
+                  value: "${{ github.event.inputs.environment || 'production' }}",
+                  short: true
+                }, {
+                  title: "태그",
+                  value: "${{ needs.makeTagAndRelease.outputs.tag_name }}",
+                  short: true
+                }, {
+                  title: "브랜치",
+                  value: "${{ github.ref_name }}",
+                  short: true
+                }, {
+                  title: "배포자",
+                  value: "${{ github.actor }}",
+                  short: true
+                }]
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL_DEPLOY }}
+
+  notify-failure:
+    runs-on: ubuntu-latest
+    needs: [ deploy ]
+    if: failure()
+    steps:
+      - name: Notify deployment failure
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: ":x: Deployment failure - ${{ github.repository }}-${{ github.ref_name }}",
+              attachments: [{
+                color: "danger",
+                fields: [{
+                  title: "환경",
+                  value: "${{ github.event.inputs.environment || 'production' }}",
+                  short: true
+                }, {
+                  title: "브랜치",
+                  value: "${{ github.ref_name }}",
+                  short: true
+                }, {
+                  title: "로그 확인",
+                  value: "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|GitHub Actions>",
+                  short: false
+                }]
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL_DEPLOY }}
