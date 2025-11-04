@@ -47,7 +47,7 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL_DEPLOY }}
   makeTagAndRelease:
-    needs: notify-start
+    needs: [notify-start]
     runs-on: ubuntu-latest
     outputs:
       tag_name: ${{ steps.create_tag.outputs.new_tag }}
@@ -70,7 +70,6 @@ jobs:
           draft: false
           prerelease: false
   buildImageAndPush:
-    needs: [notify-start]
     name: 도커 이미지 빌드와 푸시
     needs: makeTagAndRelease
     runs-on: ubuntu-latest
