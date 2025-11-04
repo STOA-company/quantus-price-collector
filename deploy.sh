@@ -19,9 +19,21 @@ export GITHUB_REPOSITORY_OWNER=${GITHUB_REPOSITORY_OWNER:-stoa-company}
 export IMAGE_TAG=${IMAGE_TAG}
 docker pull ghcr.io/${GITHUB_REPOSITORY_OWNER}/quantus-price-collector:${IMAGE_TAG}
 
-# 기본 서비스들 먼저 시작 (redis, nginx)
-echo "🔧 Starting base services (redis, nginx)..."
-docker compose up -d redis nginx
+# 기본 서비스들 먼저 시작 (redis 클러스터, nginx)
+echo "🔧 Starting base services (redis cluster, nginx)..."
+docker compose up -d redis-master redis-slave redis-sentinel-1 redis-sentinel-2 redis-sentinel-3 nginx
+
+# Redis 서비스들이 healthy 상태가 될 때까지 대기
+echo "⏳ Waiting for Redis services to be healthy..."
+for i in {1..60}; do
+    if docker compose ps --services --filter "status=running" | grep -q redis-master && \
+       docker compose ps --services --filter "status=running" | grep -q redis-slave; then
+        echo "✅ Redis services are running"
+        break
+    fi
+    echo "⏳ Waiting for Redis services... ($i/60)"
+    sleep 5
+done
 
 # 현재 활성 컨테이너 확인
 CURRENT_ACTIVE=$(docker ps --filter "name=pricecollector-" --filter "status=running" --format "{{.Names}}" | grep -E "(blue|green)" | head -1)
