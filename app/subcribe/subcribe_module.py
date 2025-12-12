@@ -31,7 +31,7 @@ class PriceSubscriber:
         """하드코딩된 설정 로드"""
         try:
             # Redis 설정
-            self.redis_host = '20.196.65.98'
+            self.redis_host = 'localhost'
             self.redis_port = 6379
             self.redis_db = 0
             self.redis_password = ''

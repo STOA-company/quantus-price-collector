@@ -3,7 +3,7 @@
 """
 
 import os
-from typing import Dict, Any
+from typing import Dict, Any, List
 from dataclasses import dataclass
 from dotenv import load_dotenv
 from .enums import SchedulerMode, MarketState
@@ -21,6 +21,9 @@ class SchedulerConfig:
     mode: SchedulerMode = SchedulerMode.TIME_BASED
     check_interval: int = 60  # 초 단위
     markets: list = None  # 지원할 시장 리스트 ["KR", "US"]
+
+    temporary_holidays_kr: List[str] = None
+    temporary_holidays_us: List[str] = None
     
     # 로깅 설정
     log_state_changes: bool = True

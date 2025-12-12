@@ -1,62 +1,116 @@
 import logging
 import json
-from typing import Any, Optional, Union, Dict, List
-from redis import Redis, ConnectionPool, RedisError
-from redis.exceptions import ConnectionError, TimeoutError
 import time
+import os
 
+from typing import Any, Optional, Union, Dict, List
+from redis import Redis, ConnectionPool, RedisError, Sentinel
+from redis.exceptions import ConnectionError, TimeoutError
+from datetime import datetime
+
+from ..utils.exceptions import RedisConnectionError, RedisOperationError
 from ..utils.config import config
-
 
 logger = logging.getLogger(__name__)
 
 
 class RedisService:
-    """Redis 연결 및 관리 서비스"""
+    """Redis Sentinel을 사용한 고가용성 Redis 연결 및 관리 서비스"""
     
     def __init__(self):
         self._redis_client: Optional[Redis] = None
+        self._sentinel: Optional[Sentinel] = None
         self._connection_pool: Optional[ConnectionPool] = None
         self._is_connected = False
         self._last_publish_time: Dict[str, float] = {}  # 종목별 마지막 발송 시간
         self._throttle_interval = 0.5  # 0.5초 간격 (더 빠른 업데이트)
         
+        # Sentinel 설정 - config.py 사용
+        self._sentinel_hosts = self._get_sentinel_hosts()
+        self._master_name = config.redis.redis_master_name
+        
+        # 마스터 변경 감지를 위한 상태 저장
+        self._last_master_info = None
+        self._last_connection_status = True
+        
+    def _get_sentinel_hosts(self) -> List[tuple]:
+        """config.py에서 Sentinel 호스트 정보를 가져옴"""
+        sentinel_hosts = []
+        
+        # config.py에서 Sentinel 정보 가져오기
+        if config.redis.redis_sentinel_enabled:
+            sentinel_env = config.redis.redis_sentinel_hosts
+            if sentinel_env:
+                for sentinel in sentinel_env.split(','):
+                    if ':' in sentinel:
+                        host, port = sentinel.strip().split(':')
+                        sentinel_hosts.append((host.strip(), int(port.strip())))
+        
+        # 기본값 설정 (docker-compose.yml의 기본 설정)
+        if not sentinel_hosts:
+            sentinel_hosts = [
+                ('redis-sentinel-1', 26379),
+                ('redis-sentinel-2', 26380),
+                ('redis-sentinel-3', 26381)
+            ]
+        
+        logger.info(f"Redis Sentinel 호스트: {sentinel_hosts}")
+        return sentinel_hosts
+        
     def connect(self) -> bool:
-        """Redis에 연결"""
+        """Redis Sentinel을 통해 Redis에 연결"""
         try:
-            # 연결 풀 생성
-            self._connection_pool = ConnectionPool(
-                host=config.redis.redis_host,
-                port=config.redis.redis_port,
-                db=config.redis.redis_db,
-                password=config.redis.redis_password,
-                max_connections=config.redis.redis_max_connections,
-                retry_on_timeout=config.redis.redis_retry_on_timeout,
-                socket_connect_timeout=config.redis.redis_socket_connect_timeout,
-                socket_timeout=config.redis.redis_socket_timeout,
+            if not self._sentinel_hosts:
+                raise RedisConnectionError(
+                    message="Sentinel 호스트가 설정되지 않음",
+                    operation="connect",
+                    error_details="REDIS_SENTINELS 환경변수가 설정되지 않음"
+                )
+            
+            # Sentinel 연결 생성
+            self._sentinel = Sentinel(
+                self._sentinel_hosts,
+                socket_timeout=5,
+                socket_connect_timeout=5,
+                retry_on_timeout=True,
                 decode_responses=True
             )
             
-            # Redis 클라이언트 생성
-            self._redis_client = Redis(connection_pool=self._connection_pool)
+            # 마스터 Redis 클라이언트 생성
+            self._redis_client = self._sentinel.master_for(
+                self._master_name,
+                socket_timeout=5,
+                socket_connect_timeout=5,
+                retry_on_timeout=True,
+                decode_responses=True
+            )
             
             # 연결 테스트
             self._redis_client.ping()
             self._is_connected = True
             
-            logger.info(f"Redis 연결 성공: {config.redis.redis_host}:{config.redis.redis_port}")
+            logger.info(f"Redis Sentinel을 통한 연결 성공: 마스터={self._master_name}")
             return True
             
         except (ConnectionError, TimeoutError, RedisError) as e:
-            logger.error(f"Redis 연결 실패: {e}")
             self._is_connected = False
-            return False
+            error_msg = f"Redis Sentinel 연결 실패: {e}"
+            logger.error(f"Redis Sentinel 연결 실패: {error_msg}")
+            raise RedisConnectionError(
+                message=error_msg,
+                operation="connect",
+                error_details=str(e)
+            )
     
     def disconnect(self):
         """Redis 연결 해제"""
         if self._redis_client:
             self._redis_client.close()
             self._redis_client = None
+        
+        # if self._sentinel:
+        #     self._sentinel.close()
+        #     self._sentinel = None
         
         if self._connection_pool:
             self._connection_pool.disconnect()
@@ -68,21 +122,55 @@ class RedisService:
     def is_connected(self) -> bool:
         """연결 상태 확인"""
         if not self._redis_client or not self._is_connected:
+            # 연결 상태가 변경되었는지 확인
+            if self._last_connection_status:
+                self._last_connection_status = False
+                self._send_redis_connection_lost_alert()
             return False
         
         try:
             self._redis_client.ping()
+            # 연결 상태가 변경되었는지 확인
+            if not self._last_connection_status:
+                self._last_connection_status = True
+                self._send_redis_connection_restored_alert()
             return True
         except (ConnectionError, TimeoutError, RedisError):
             self._is_connected = False
+            # 연결 상태가 변경되었는지 확인
+            if self._last_connection_status:
+                self._last_connection_status = False
+                self._send_redis_connection_lost_alert()
             return False
     
     def get_client(self) -> Optional[Redis]:
-        """Redis 클라이언트 반환"""
+        """Redis 클라이언트 반환 (필요시 재연결)"""
         if not self.is_connected():
-            if not self.connect():
+            try:
+                if not self.connect():
+                    return None
+            except RedisConnectionError as e:
+                logger.error(f"Redis 재연결 실패: {e}")
                 return None
         return self._redis_client
+    
+    def get_slave_client(self) -> Optional[Redis]:
+        """읽기 전용 슬레이브 Redis 클라이언트 반환"""
+        try:
+            if not self._sentinel:
+                if not self.connect():
+                    return None
+            
+            return self._sentinel.slave_for(
+                self._master_name,
+                socket_timeout=5,
+                socket_connect_timeout=5,
+                retry_on_timeout=True,
+                decode_responses=True
+            )
+        except Exception as e:
+            logger.error(f"슬레이브 클라이언트 생성 실패: {e}")
+            return None
     
     def set(self, key: str, value: Any, ex: Optional[int] = None) -> bool:
         """키-값 설정"""
@@ -98,13 +186,22 @@ class RedisService:
             result = client.set(key, value, ex=ex)
             return result
         except Exception as e:
-            logger.error(f"Redis SET 오류 - 키: {key}, 오류: {e}")
-            return False
+            error_msg = f"Redis SET 오류 - 키: {key}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="set",
+                key=key,
+                error_details=str(e)
+            )
     
     def get(self, key: str) -> Optional[Any]:
-        """키로 값 조회"""
+        """키로 값 조회 (슬레이브 사용)"""
         try:
-            client = self.get_client()
+            # 읽기 작업은 슬레이브 사용
+            client = self.get_slave_client() or self.get_client()
             if not client:
                 return None
             
@@ -119,11 +216,19 @@ class RedisService:
                 return value
                 
         except Exception as e:
-            logger.error(f"Redis GET 오류 - 키: {key}, 오류: {e}")
-            return None
+            error_msg = f"Redis GET 오류 - 키: {key}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="get",
+                key=key,
+                error_details=str(e)
+            )
     
     def delete(self, key: str) -> bool:
-        """키 삭제"""
+        """키 삭제 (마스터 사용)"""
         try:
             client = self.get_client()
             if not client:
@@ -132,23 +237,40 @@ class RedisService:
             result = client.delete(key)
             return result > 0
         except Exception as e:
-            logger.error(f"Redis DELETE 오류 - 키: {key}, 오류: {e}")
-            return False
+            error_msg = f"Redis DELETE 오류 - 키: {key}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="delete",
+                key=key,
+                error_details=str(e)
+            )
     
     def exists(self, key: str) -> bool:
-        """키 존재 여부 확인"""
+        """키 존재 여부 확인 (슬레이브 사용)"""
         try:
-            client = self.get_client()
+            # 읽기 작업은 슬레이브 사용
+            client = self.get_slave_client() or self.get_client()
             if not client:
                 return False
             
             return client.exists(key) > 0
         except Exception as e:
-            logger.error(f"Redis EXISTS 오류 - 키: {key}, 오류: {e}")
-            return False
+            error_msg = f"Redis EXISTS 오류 - 키: {key}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="exists",
+                key=key,
+                error_details=str(e)
+            )
     
     def expire(self, key: str, seconds: int) -> bool:
-        """키 만료 시간 설정"""
+        """키 만료 시간 설정 (마스터 사용)"""
         try:
             client = self.get_client()
             if not client:
@@ -156,23 +278,40 @@ class RedisService:
             
             return client.expire(key, seconds)
         except Exception as e:
-            logger.error(f"Redis EXPIRE 오류 - 키: {key}, 오류: {e}")
-            return False
+            error_msg = f"Redis EXPIRE 오류 - 키: {key}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="expire",
+                key=key,
+                error_details=str(e)
+            )
     
     def ttl(self, key: str) -> int:
-        """키의 남은 만료 시간 조회 (초)"""
+        """키의 남은 만료 시간 조회 (초) (슬레이브 사용)"""
         try:
-            client = self.get_client()
+            # 읽기 작업은 슬레이브 사용
+            client = self.get_slave_client() or self.get_client()
             if not client:
                 return -1
             
             return client.ttl(key)
         except Exception as e:
-            logger.error(f"Redis TTL 오류 - 키: {key}, 오류: {e}")
-            return -1
+            error_msg = f"Redis TTL 오류 - 키: {key}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="ttl",
+                key=key,
+                error_details=str(e)
+            )
     
     def hset(self, name: str, key: str, value: Any) -> bool:
-        """해시 설정"""
+        """해시 설정 (마스터 사용)"""
         try:
             client = self.get_client()
             if not client:
@@ -184,13 +323,22 @@ class RedisService:
             result = client.hset(name, key, value)
             return result >= 0
         except Exception as e:
-            logger.error(f"Redis HSET 오류 - 해시: {name}, 키: {key}, 오류: {e}")
-            return False
+            error_msg = f"Redis HSET 오류 - 해시: {name}, 키: {key}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="hset",
+                key=f"{name}:{key}",
+                error_details=str(e)
+            )
     
     def hget(self, name: str, key: str) -> Optional[Any]:
-        """해시 값 조회"""
+        """해시 값 조회 (슬레이브 사용)"""
         try:
-            client = self.get_client()
+            # 읽기 작업은 슬레이브 사용
+            client = self.get_slave_client() or self.get_client()
             if not client:
                 return None
             
@@ -204,13 +352,22 @@ class RedisService:
                 return value
                 
         except Exception as e:
-            logger.error(f"Redis HGET 오류 - 해시: {name}, 키: {key}, 오류: {e}")
-            return None
+            error_msg = f"Redis HGET 오류 - 해시: {name}, 키: {key}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="hget",
+                key=f"{name}:{key}",
+                error_details=str(e)
+            )
     
     def hgetall(self, name: str) -> Dict[str, Any]:
-        """해시 전체 조회"""
+        """해시 전체 조회 (슬레이브 사용)"""
         try:
-            client = self.get_client()
+            # 읽기 작업은 슬레이브 사용
+            client = self.get_slave_client() or self.get_client()
             if not client:
                 return {}
             
@@ -228,11 +385,19 @@ class RedisService:
             
             return parsed_result
         except Exception as e:
-            logger.error(f"Redis HGETALL 오류 - 해시: {name}, 오류: {e}")
-            return {}
+            error_msg = f"Redis HGETALL 오류 - 해시: {name}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="hgetall",
+                key=name,
+                error_details=str(e)
+            )
     
     def lpush(self, name: str, *values) -> int:
-        """리스트 왼쪽에 값 추가"""
+        """리스트 왼쪽에 값 추가 (마스터 사용)"""
         try:
             client = self.get_client()
             if not client:
@@ -248,11 +413,19 @@ class RedisService:
             
             return client.lpush(name, *serialized_values)
         except Exception as e:
-            logger.error(f"Redis LPUSH 오류 - 리스트: {name}, 오류: {e}")
-            return 0
+            error_msg = f"Redis LPUSH 오류 - 리스트: {name}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="lpush",
+                key=name,
+                error_details=str(e)
+            )
     
     def rpush(self, name: str, *values) -> int:
-        """리스트 오른쪽에 값 추가"""
+        """리스트 오른쪽에 값 추가 (마스터 사용)"""
         try:
             client = self.get_client()
             if not client:
@@ -268,13 +441,22 @@ class RedisService:
             
             return client.rpush(name, *serialized_values)
         except Exception as e:
-            logger.error(f"Redis RPUSH 오류 - 리스트: {name}, 오류: {e}")
-            return 0
+            error_msg = f"Redis RPUSH 오류 - 리스트: {name}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="rpush",
+                key=name,
+                error_details=str(e)
+            )
     
     def lrange(self, name: str, start: int, end: int) -> List[Any]:
-        """리스트 범위 조회"""
+        """리스트 범위 조회 (슬레이브 사용)"""
         try:
-            client = self.get_client()
+            # 읽기 작업은 슬레이브 사용
+            client = self.get_slave_client() or self.get_client()
             if not client:
                 return []
             
@@ -292,23 +474,40 @@ class RedisService:
             
             return parsed_result
         except Exception as e:
-            logger.error(f"Redis LRANGE 오류 - 리스트: {name}, 오류: {e}")
-            return []
+            error_msg = f"Redis LRANGE 오류 - 리스트: {name}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="lrange",
+                key=name,
+                error_details=str(e)
+            )
     
     def info(self) -> Dict[str, Any]:
-        """Redis 서버 정보 조회"""
+        """Redis 서버 정보 조회 (슬레이브 사용)"""
         try:
-            client = self.get_client()
+            # 읽기 작업은 슬레이브 사용
+            client = self.get_slave_client() or self.get_client()
             if not client:
                 return {}
             
             return client.info()
         except Exception as e:
-            logger.error(f"Redis INFO 오류: {e}")
-            return {}
+            error_msg = f"Redis INFO 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="info",
+                key="",
+                error_details=str(e)
+            )
 
     def publish_raw_data(self, broker_name: str, data: Dict[str, Any]) -> bool:
-        """원본 데이터를 Redis에 발행 (1초 throttling 적용)"""
+        """원본 데이터를 Redis에 발행 (1초 throttling 적용, 마스터 사용)"""
         try:
             client = self.get_client()
             if not client:
@@ -339,11 +538,19 @@ class RedisService:
             return result > 0
             
         except Exception as e:
-            logger.error(f"원본 데이터 발행 오류 - 브로커: {broker_name}, 오류: {e}")
-            return False
+            error_msg = f"원본 데이터 발행 오류 - 브로커: {broker_name}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생 (중요한 작업이므로 슬랙 알림 포함)
+            raise RedisOperationError(
+                message=error_msg,
+                operation="publish_raw_data",
+                key=f"{broker_name}:{data.get('symbol', 'unknown')}",
+                error_details=str(e)
+            )
 
     def set_broker_status(self, broker_name: str, status_data: Dict[str, Any]) -> bool:
-        """브로커 상태 정보를 Redis에 저장"""
+        """브로커 상태 정보를 Redis에 저장 (마스터 사용)"""
         try:
             client = self.get_client()
             if not client:
@@ -351,9 +558,12 @@ class RedisService:
             
             # 키명 생성
             key = f"broker:{broker_name}:status"
+
+            # datetime 객체를 문자열로 변환
+            serialized_data = self._serialize_datetime_objects(status_data)
             
             # 상태 데이터를 JSON으로 직렬화
-            message = json.dumps(status_data, ensure_ascii=False)
+            message = json.dumps(serialized_data, ensure_ascii=False)
             
             # Redis에 저장 (30초 만료)
             result = client.setex(key, 30, message)
@@ -362,13 +572,22 @@ class RedisService:
             return result
             
         except Exception as e:
-            logger.error(f"브로커 상태 저장 오류 - 브로커: {broker_name}, 오류: {e}")
-            return False
+            error_msg = f"브로커 상태 저장 오류 - 브로커: {broker_name}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생 (중요한 작업이므로 슬랙 알림 포함)
+            raise RedisOperationError(
+                message=error_msg,
+                operation="set_broker_status",
+                key=key,
+                error_details=str(e)
+            )
 
     def get_broker_status(self, broker_name: str) -> Optional[Dict[str, Any]]:
-        """브로커 상태 정보를 Redis에서 조회"""
+        """브로커 상태 정보를 Redis에서 조회 (슬레이브 사용)"""
         try:
-            client = self.get_client()
+            # 읽기 작업은 슬레이브 사용
+            client = self.get_slave_client() or self.get_client()
             if not client:
                 return None
             
@@ -387,13 +606,22 @@ class RedisService:
                 return None
                 
         except Exception as e:
-            logger.error(f"브로커 상태 조회 오류 - 브로커: {broker_name}, 오류: {e}")
-            return None
+            error_msg = f"브로커 상태 조회 오류 - 브로커: {broker_name}, 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="get_broker_status",
+                key=key,
+                error_details=str(e)
+            )
 
     def get_all_broker_status(self) -> Dict[str, Dict[str, Any]]:
-        """모든 브로커 상태 정보 조회"""
+        """모든 브로커 상태 정보 조회 (슬레이브 사용)"""
         try:
-            client = self.get_client()
+            # 읽기 작업은 슬레이브 사용
+            client = self.get_slave_client() or self.get_client()
             if not client:
                 return {}
             
@@ -418,8 +646,98 @@ class RedisService:
             return result
             
         except Exception as e:
-            logger.error(f"모든 브로커 상태 조회 오류: {e}")
-            return {}
+            error_msg = f"모든 브로커 상태 조회 오류: {e}"
+            logger.error(error_msg)
+            
+            # Redis 작업 에러 예외 발생
+            raise RedisOperationError(
+                message=error_msg,
+                operation="get_all_broker_status",
+                key="",
+                error_details=str(e)
+            )
+    def _serialize_datetime_objects(self, obj):
+        """datetime 객체를 문자열로 변환하는 헬퍼 메서드"""
+        if isinstance(obj, dict):
+            return {key: self._serialize_datetime_objects(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._serialize_datetime_objects(item) for item in obj]
+        elif isinstance(obj, datetime):
+            return obj.isoformat()
+        else:
+            return obj
+
+    def _send_redis_connection_lost_alert(self):
+        """Redis 연결이 끊어졌음을 알립니다."""
+        # Slack 알림 직접 전송하지 않고 예외 발생
+        raise RedisConnectionError(
+            message="Redis 연결 끊김",
+            operation="is_connected",
+            error_details="Redis 클라이언트 연결 상태 확인 실패"
+        )
+
+    def _send_redis_connection_restored_alert(self):
+        """Redis 연결이 복원되었음을 알립니다."""
+        # 연결 복원은 로그만 남기고 Slack 알림은 하지 않음
+        logger.info("Redis 연결이 복원되었습니다.")
+
+    def _check_master_change(self):
+        """마스터 변경을 감지하고 Slack 알림을 보냅니다."""
+        try:
+            if not self._sentinel:
+                return
+            
+            # 현재 마스터 정보 조회
+            current_master_info = self._sentinel.master(self._master_name)
+            
+            if current_master_info and self._last_master_info:
+                # 마스터 정보가 변경되었는지 확인
+                if current_master_info != self._last_master_info:
+                    self._send_master_change_alert(current_master_info)
+            
+            # 마스터 정보 업데이트
+            self._last_master_info = current_master_info
+            
+        except Exception as e:
+            logger.error(f"마스터 변경 감지 중 오류: {e}")
+
+    def _send_master_change_alert(self, new_master_info):
+        """마스터 변경 시 Slack 알림을 보냅니다."""
+        # 마스터 변경은 로그만 남기고 Slack 알림은 하지 않음
+        logger.warning(f"Redis 마스터 변경 감지: {new_master_info}")
+        
+        # 마스터 변경 시에도 예외 발생 (Slack 알림을 위해)
+        raise RedisConnectionError(
+            message="Redis 마스터 변경 감지",
+            operation="monitor_sentinel_status",
+            error_details=f"새 마스터: {new_master_info}"
+        )
+
+    def monitor_sentinel_status(self) -> bool:
+        """Sentinel 상태 모니터링 및 마스터 변경 감지"""
+        try:
+            if not self._sentinel:
+                return False
+            
+            # 마스터/슬레이브 상태 확인
+            master_info = self._sentinel.master(self._master_name)
+            slaves_info = self._sentinel.slaves(self._master_name)
+            
+            # 마스터 변경 감지
+            self._check_master_change()
+            
+            # 상태 로깅
+            logger.info(f"Redis Sentinel 상태 - 마스터: {master_info}, 슬레이브: {len(slaves_info)}개")
+            
+            return True
+            
+        except Exception as e:
+            # Slack 알림 전송
+            raise RedisConnectionError(
+                message="Sentinel 상태 모니터링 실패",
+                operation="monitor_sentinel_status",
+                error_details=str(e)
+            )
 
 
 # 전역 Redis 서비스 인스턴스

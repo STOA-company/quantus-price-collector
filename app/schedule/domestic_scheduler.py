@@ -36,9 +36,9 @@ class DomesticScheduler:
 
         from ..utils.config import config
         dbfi_config = config.dbfi.get_config_for_market(MarketType.DOMESTIC)
-        logger.info(f"🔑 [국내] DBFI 설정 확인:")
-        logger.info(f"   API Key: {dbfi_config['api_key'][:10]}..." if dbfi_config['api_key'] else "   API Key: 설정되지 않음")
-        logger.info(f"   API Secret: {'설정됨' if dbfi_config['api_secret'] else '설정되지 않음'}")
+        logger.debug(f"🔑 [국내] DBFI 설정 확인:")
+        logger.debug(f"   API Key: {dbfi_config['api_key'][:10]}..." if dbfi_config['api_key'] else "   API Key: 설정되지 않음")
+        logger.debug(f"   API Secret: {'설정됨' if dbfi_config['api_secret'] else '설정되지 않음'}")
                 
         # 국내 시장 설정 로드
         config = load_scheduler_config()
@@ -224,6 +224,31 @@ class DomesticScheduler:
         # 브로커 데몬 정지
         await self._stop_broker_daemon()
 
+    # async def _monitor_loop(self):
+    #     """한국 시장 상태 모니터링 루프"""
+    #     while self.is_running:
+    #         try:
+    #             self.stats['last_check_time'] = datetime.now()
+                
+    #             # 현재 한국 시장 상태 확인
+    #             new_state = self.get_current_market_state()
+                
+    #             # 상태 변경 감지
+    #             if new_state != self.current_state:
+    #                 await self._handle_state_change(self.current_state, new_state)
+    #                 self.current_state = new_state
+                
+    #             # 설정된 간격만큼 대기
+    #             await asyncio.sleep(self.check_interval)
+                
+    #         except asyncio.CancelledError:
+    #             self.logger.info("[국내] 스케줄러 모니터링 루프가 취소되었습니다")
+    #             break
+    #         except Exception as e:
+    #             self.logger.error(f"[국내] 모니터링 루프 오류: {e}")
+    #             self.stats['errors'] += 1
+    #             # 오류 발생 시 짧은 대기 후 재시도
+    #             await asyncio.sleep(min(self.check_interval, 30))
     async def _monitor_loop(self):
         """한국 시장 상태 모니터링 루프"""
         while self.is_running:
@@ -232,6 +257,12 @@ class DomesticScheduler:
                 
                 # 현재 한국 시장 상태 확인
                 new_state = self.get_current_market_state()
+                
+                # 디버깅 로그 추가
+                if new_state != self.current_state:
+                    self.logger.info(f"[국내] 상태 변경 감지: {self.current_state.description} → {new_state.description}")
+                else:
+                    self.logger.debug(f"[국내] 현재 상태 유지: {self.current_state.description}")
                 
                 # 상태 변경 감지
                 if new_state != self.current_state:
@@ -249,7 +280,6 @@ class DomesticScheduler:
                 self.stats['errors'] += 1
                 # 오류 발생 시 짧은 대기 후 재시도
                 await asyncio.sleep(min(self.check_interval, 30))
-
     def get_status(self) -> dict:
         """스케줄러 상태 정보 반환"""
         daemon_running = self.daemon_task and not self.daemon_task.done() if self.daemon_task else False
