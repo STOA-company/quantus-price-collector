@@ -2,10 +2,19 @@ import logging
 import threading
 from datetime import datetime, timedelta
 from typing import Dict, Any
+from collections import deque
 
 import requests
 
 from app.brokers.base import BrokerOAuth
+
+
+class TokenRateLimitError(Exception):
+    """토큰 발급 횟수 제한 초과 예외"""
+    def __init__(self, message, limit, time_window):
+        self.limit = limit
+        self.time_window = time_window
+        super().__init__(message)
 
 
 class TokenRequestError(Exception):
@@ -58,6 +67,11 @@ class DBFIOAuth(BrokerOAuth):
         self._initialized = True
         self.headers = headers
 
+        # 토큰 발급 횟수 제한 (시간당 5회)
+        self.token_request_limit = 5
+        self.token_request_window = 3600  # 1시간 (초)
+        self.token_request_history = deque()  # 발급 시각 저장
+
     def get_token(self) -> str:
         """액세스 토큰 발급"""
         if not self.is_token_valid():
@@ -72,8 +86,32 @@ class DBFIOAuth(BrokerOAuth):
             return False
         return datetime.now() + timedelta(minutes=10) < self.expire_in
 
+    def _check_token_request_limit(self) -> None:
+        """토큰 발급 횟수 제한 체크"""
+        now = datetime.now()
+
+        # 시간 윈도우 밖의 오래된 기록 제거
+        while self.token_request_history and \
+              (now - self.token_request_history[0]).total_seconds() > self.token_request_window:
+            self.token_request_history.popleft()
+
+        # 제한 초과 체크
+        if len(self.token_request_history) >= self.token_request_limit:
+            oldest_request = self.token_request_history[0]
+            wait_time = self.token_request_window - (now - oldest_request).total_seconds()
+
+            error_msg = (
+                f"토큰 발급 횟수 제한 초과: {self.token_request_limit}회/{self.token_request_window}초. "
+                f"{wait_time:.0f}초 후 재시도 가능"
+            )
+            self.logger.error(f"🚨 {error_msg}")
+            raise TokenRateLimitError(error_msg, self.token_request_limit, self.token_request_window)
+
     def request_token(self) -> None:
         """토큰 요청"""
+        # 토큰 발급 횟수 제한 체크
+        self._check_token_request_limit()
+
         headers = {"content-type": "application/x-www-form-urlencoded"}
         data = {
             "grant_type": "client_credentials",
@@ -93,8 +131,13 @@ class DBFIOAuth(BrokerOAuth):
             expire_in = int(token_data.get("expires_in", 86400))
             self.expire_in = datetime.now() + timedelta(seconds=expire_in)
             self.token_type = token_data.get("token_type")
+
+            # 발급 이력에 추가
+            self.token_request_history.append(datetime.now())
+
             self.logger.info(
-                f"New access token obtained. Valid until: {self.expire_in}"
+                f"New access token obtained. Valid until: {self.expire_in} "
+                f"(발급 횟수: {len(self.token_request_history)}/{self.token_request_limit})"
             )
         except requests.exceptions.RequestException as e:
             status_code = None
@@ -152,3 +195,41 @@ class DBFIOAuth(BrokerOAuth):
     def get_auth_header(self) -> Dict[str, str]:
         """인증 헤더 반환"""
         return {"authorization": f"{self.token_type} {self.get_token()}", **self.headers}
+
+    def disconnect_session(self, account_no: str) -> Dict[str, Any]:
+        """웹소켓 세션 초기화 - 모든 활성 세션 종료"""
+        if not account_no:
+            self.logger.warning("계좌번호가 없어 세션 초기화를 건너뜁니다")
+            return {"code": 400, "message": "계좌번호 없음"}
+
+        if not self.token:
+            self.logger.warning("토큰이 없어 세션 초기화를 건너뜁니다")
+            return {"code": 400, "message": "토큰 없음"}
+
+        headers = {
+            "Content-Type": "application/json;charset=utf-8",
+            "authorization": f"Bearer {self.token}"
+        }
+        data = {"acntNo": account_no}
+
+        try:
+            self.logger.info(f"웹소켓 세션 초기화 시도 (계좌: {account_no})")
+            response = requests.post(
+                f"{self.BASE_URL}/api/v1/websocket/disconnectSession",
+                headers=headers,
+                json=data
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("result"):
+                self.logger.info(f"세션 초기화 성공: {result.get('result')}")
+            else:
+                self.logger.warning(f"세션 초기화 응답: {result}")
+
+            return result
+        except requests.RequestException as e:
+            self.logger.error(f"세션 초기화 실패: {str(e)}")
+            if hasattr(e, "response") and e.response:
+                self.logger.error(f"응답: {e.response.text}")
+            raise e

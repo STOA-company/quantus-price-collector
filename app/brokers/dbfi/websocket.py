@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Dict, Optional, AsyncGenerator, Any
 
 from app.brokers.base import BrokerWebSocketClient, BrokerConfig, MarketType
-from app.brokers.dbfi.oauth import DBFIOAuth
+from app.brokers.dbfi.oauth import DBFIOAuth, TokenRateLimitError
 from app.brokers.dbfi.schemas import DBFIMessageBuilder, DBFIMessageParser, DBFIMarketType
 from app.utils.config import config
 
@@ -32,19 +32,24 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
             )
         
         super().__init__(broker_config)
-        
+
         # MarketType 저장
         self.market_type = broker_config.market_type
+
+        # 시장별 설정 가져오기
+        dbfi_market_config = config.dbfi.get_config_for_market(self.market_type)
 
         logger.info(f"🔑 DBFIWebSocketClient 초기화 ({self.market_type.value}):")
         logger.info(f"   API Key: {broker_config.api_key[:10]}..." if broker_config.api_key else "   API Key: 설정되지 않음")
         logger.info(f"   API Secret: {'설정됨' if broker_config.api_secret else '설정되지 않음'}")
         logger.info(f"   WebSocket URL: {broker_config.websocket_url}")
-            
+        logger.info(f"   Account No: {dbfi_market_config.get('account_no', '')[:4]}***" if dbfi_market_config.get('account_no') else "   Account No: 설정되지 않음")
+
         # DBFI 설정 (config에서 직접 가져옴)
-        self.api_key = broker_config.api_key  # ← broker_config에서 가져오도록 수정
-        self.api_secret = broker_config.api_secret  # ← broker_config에서 가져오도록 수정
-        self.websocket_url = broker_config.websocket_url  # ← broker_config에서 가져오도록 수정
+        self.api_key = broker_config.api_key
+        self.api_secret = broker_config.api_secret
+        self.account_no = dbfi_market_config.get('account_no', '')
+        self.websocket_url = broker_config.websocket_url
         self.batch_size = broker_config.batch_size
         self.available_sessions = broker_config.available_sessions
         self.heartbeat_timeout = config.dbfi.heartbeat_timeout
@@ -59,8 +64,17 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
         """DBFI 웹소켓 연결"""
         try:
             # 액세스 토큰 발급
-            if not self.access_token:
+            if not self.access_token or self.oauth.is_token_valid():
                 self.access_token = self._get_access_token()
+
+            # 🔥 웹소켓 연결 전 기존 세션 초기화
+            if self.account_no:
+                try:
+                    logger.info(f"🧹 [{self.market_type.value}] 기존 웹소켓 세션 초기화 시도...")
+                    result = self.oauth.disconnect_session(self.account_no)
+                    logger.info(f"✅ [{self.market_type.value}] 세션 초기화 완료: {result.get('result', result)}")
+                except Exception as e:
+                    logger.warning(f"⚠️  [{self.market_type.value}] 세션 초기화 실패 (무시하고 진행): {e}")
 
             # 웹소켓 URL 구성
             ws_url = self._build_websocket_url()
@@ -69,7 +83,7 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
             logger.info(f"🔑 웹소켓 연결 시도 ({self.market_type.value}):")
             logger.info(f"   API Key: {self.api_key[:10]}...")
             logger.info(f"   Access Token: {self.access_token[:30]}...")
-            
+
             # 웹소켓 연결
             self.websocket = await websockets.connect(
                 ws_url,
@@ -127,11 +141,21 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
         try:
             # ping 루프 중지
             await self.stop_ping_loop()
-            
+
             if self.websocket:
                 await self.websocket.close()
                 self.websocket = None
                 logger.debug("DBFI 웹소켓 연결 해제됨")
+
+            # 🔥 토큰 해지 (서버 리소스 정리)
+            try:
+                if self.oauth and self.access_token:
+                    logger.info(f"🔓 [{self.market_type.value}] 액세스 토큰 해지 시도...")
+                    result = self.oauth.revoke_token()
+                    logger.info(f"✅ [{self.market_type.value}] 토큰 해지 완료: {result.get('message', result)}")
+            except Exception as e:
+                logger.warning(f"⚠️  [{self.market_type.value}] 토큰 해지 실패 (무시): {e}")
+
         except Exception as e:
             logger.error(f"DBFI 웹소켓 연결 해제 실패: {e}")
 
@@ -271,6 +295,10 @@ class DBFIWebSocketClient(BrokerWebSocketClient):
             token = self.oauth.get_token()
             logger.debug("액세스 토큰 발급 성공")
             return token
+        except TokenRateLimitError as e:
+            logger.error(f"🚨 토큰 발급 횟수 제한 초과: {e}")
+            logger.error(f"   재연결이 너무 빈번합니다. 근본 원인을 확인하세요.")
+            raise
         except Exception as e:
             logger.error(f"액세스 토큰 발급 실패: {e}")
             raise

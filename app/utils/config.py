@@ -37,6 +37,7 @@ class DBFIConfig(BaseSettings):
     # 🔥 국내 시장 전용 설정
     domestic_api_key: str = Field(default="", alias="DBFI_DOMESTIC_API_KEY")
     domestic_api_secret: str = Field(default="", alias="DBFI_DOMESTIC_API_SECRET")
+    domestic_account_no: str = Field(default="", alias="DBFI_DOMESTIC_ACCOUNT_NO")
     domestic_ws_url: str = Field(default="wss://openapi.dbsec.co.kr:7070", alias="DBFI_DOMESTIC_WS_URL")
     domestic_batch_size: int = Field(default=20, alias="DBFI_DOMESTIC_BATCH_SIZE")
     domestic_available_sessions: int = Field(default=2, alias="DBFI_DOMESTIC_AVAILABLE_SESSIONS")
@@ -44,6 +45,7 @@ class DBFIConfig(BaseSettings):
     # 🔥 해외 시장 전용 설정
     foreign_api_key: str = Field(default="", alias="DBFI_FOREIGN_API_KEY")
     foreign_api_secret: str = Field(default="", alias="DBFI_FOREIGN_API_SECRET")
+    foreign_account_no: str = Field(default="", alias="DBFI_FOREIGN_ACCOUNT_NO")
     foreign_ws_url: str = Field(default="wss://openapi.dbsec.co.kr:7070", alias="DBFI_FOREIGN_WS_URL")
     foreign_batch_size: int = Field(default=20, alias="DBFI_FOREIGN_BATCH_SIZE")
     foreign_available_sessions: int = Field(default=2, alias="DBFI_FOREIGN_AVAILABLE_SESSIONS")
@@ -62,11 +64,12 @@ class DBFIConfig(BaseSettings):
     def get_config_for_market(self, market_type) -> dict:
         """시장 타입에 따른 설정 반환"""
         from ..brokers.base import MarketType
-        
+
         if market_type == MarketType.DOMESTIC:
             config = {
                 'api_key': self.domestic_api_key or self.api_key,
                 'api_secret': self.domestic_api_secret or self.api_secret,
+                'account_no': self.domestic_account_no,
                 'websocket_url': self.domestic_ws_url or self.websocket_url,
                 'batch_size': self.domestic_batch_size or self.batch_size,
                 'available_sessions': self.domestic_available_sessions or self.available_sessions
@@ -75,6 +78,7 @@ class DBFIConfig(BaseSettings):
             config = {
                 'api_key': self.foreign_api_key or self.api_key,
                 'api_secret': self.foreign_api_secret or self.api_secret,
+                'account_no': self.foreign_account_no,
                 'websocket_url': self.foreign_ws_url or self.websocket_url,
                 'batch_size': self.foreign_batch_size or self.batch_size,
                 'available_sessions': self.foreign_available_sessions or self.available_sessions

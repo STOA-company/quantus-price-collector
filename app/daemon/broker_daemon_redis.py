@@ -6,10 +6,11 @@ from typing import Dict, Set, Optional
 from app.services.redis_service import RedisService
 from app.brokers.factory import broker_factory_manager
 from app.brokers.base import BrokerWebSocketClient, MarketType, BrokerConfig
+from app.brokers.dbfi.oauth import TokenRateLimitError
 from app.utils.config import config
 from app.utils.exceptions import (
-    BrokerConnectionError, 
-    CircuitBreakerError, 
+    BrokerConnectionError,
+    CircuitBreakerError,
     BrokerInitializationError,
     BrokerReconnectionError,
     ResubscriptionFailedError
@@ -518,7 +519,29 @@ class BrokerDaemonRedis:
                     #     await self._execute_rest_api_fallback(broker_name)
                     # except Exception as rest_error:
                     #     logger.error(f"❌ {broker_name} REST API 폴백 실패: {rest_error}")
-            
+
+            except TokenRateLimitError as e:
+                # 토큰 발급 횟수 제한 초과 - 재연결 루프 중단
+                logger.error(f"🚨 {broker_name} 토큰 발급 횟수 제한 초과")
+                logger.error(f"   {e}")
+                logger.error(f"   서킷브레이커를 DISABLED로 전환하여 재연결 중단")
+
+                # 서킷브레이커를 DISABLED로 설정하여 재연결 시도 중단
+                circuit_breaker = self.circuit_breakers.get(broker_name, {})
+                circuit_breaker['state'] = 'DISABLED'
+
+                # Slack 알림 (선택사항)
+                try:
+                    BrokerDaemonStatusNotification.send_broker_reconnection_success(
+                        broker_name=broker_name,
+                        attempt_count=0,
+                        wait_time=0
+                    )
+                except Exception:
+                    pass
+
+                break  # 브로커 루프 종료
+
             except BrokerConnectionError as e:
                 reconnect_count += 1
                 logger.error(f"🔌 {broker_name} 연결 오류 (재시도 {reconnect_count}회): {e}")
