@@ -70,7 +70,12 @@ class DBFIOAuth(BrokerOAuth):
         # 토큰 발급 횟수 제한 (시간당 5회)
         self.token_request_limit = 5
         self.token_request_window = 3600  # 1시간 (초)
-        self.token_request_history = deque()  # 발급 시각 저장
+        # 🚨 이력은 «앱키당» 상태이므로 여기서 새로 만들면 안 된다. 이 __init__ 은 유효한
+        #    토큰이 없을 때만 끝까지 실행된다 — 즉 증권사가 거절하고 있는 바로 그때 한도가
+        #    되살아난다. 웹소켓과 REST 폴백이 각각 생성하므로 실제로 매번 지워졌다
+        #    (2026-08-28 운영 실측: 403 IGW00201 상태로 재시도가 무한 반복).
+        if not hasattr(self, "token_request_history"):
+            self.token_request_history = deque()  # 발급 «시도» 시각 저장
 
     def get_token(self) -> str:
         """액세스 토큰 발급"""
@@ -112,6 +117,10 @@ class DBFIOAuth(BrokerOAuth):
         # 토큰 발급 횟수 제한 체크
         self._check_token_request_limit()
 
+        # 🚨 «시도» 를 먼저 기록한다. 성공만 세면 거절당하는 동안 가드가 풀려서, 막아야 할
+        #    바로 그 순간에 재시도가 무한정 허용된다. 그 재시도가 다시 한도를 붙잡는다.
+        self.token_request_history.append(datetime.now())
+
         headers = {"content-type": "application/x-www-form-urlencoded"}
         data = {
             "grant_type": "client_credentials",
@@ -131,9 +140,6 @@ class DBFIOAuth(BrokerOAuth):
             expire_in = int(token_data.get("expires_in", 86400))
             self.expire_in = datetime.now() + timedelta(seconds=expire_in)
             self.token_type = token_data.get("token_type")
-
-            # 발급 이력에 추가
-            self.token_request_history.append(datetime.now())
 
             self.logger.info(
                 f"New access token obtained. Valid until: {self.expire_in} "
