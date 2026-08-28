@@ -6,6 +6,7 @@ from typing import Dict, Set, Optional
 from app.services.redis_service import RedisService
 from app.brokers.factory import broker_factory_manager
 from app.brokers.base import BrokerWebSocketClient, MarketType, BrokerConfig
+from app.brokers.dbfi.oauth import TokenRateLimitError
 from app.utils.config import config
 from app.utils.exceptions import (
     BrokerConnectionError, 
@@ -574,6 +575,16 @@ class BrokerDaemon:
                     )
                 except Exception as e:
                     logger.warning(f"Slack 재연결 성공 알림 전송 실패: {e}")
+
+            except TokenRateLimitError as e:
+                # 🚨 한도를 다 썼으면 «더 빨리» 가 아니라 «멈춤» 이다. 이 예외는 증권사에
+                #    요청을 보내지 않고 우리 가드가 던진 것이다. 10초 뒤 다시 시도하면
+                #    한도가 풀리는 순간을 우리 재시도가 다시 잡아먹는다(2026-08-28 운영 실측).
+                #    broker_daemon_redis 는 이미 같은 처리를 한다 — 같은 규칙을 여기에도 둔다.
+                logger.error(f"🚨 {broker_name} 토큰 발급 횟수 제한 초과 — 재연결 중단: {e}")
+                self.stats['error_count'] += 1
+                self.circuit_breakers.get(broker_name, {})['state'] = 'DISABLED'
+                break
 
             except Exception as e:
                 logger.error(f"💥 {broker_name} 예상치 못한 오류: {e}")
